@@ -1,0 +1,13 @@
+{
+  "shell_port": 60352,
+  "iopub_port": 60353,
+  "stdin_port": 60354,
+  "control_port": 60356,
+  "hb_port": 60355,
+  "ip": "127.0.0.1",
+  "key": "a8766fa3-4e37587ed0ab25c63de60df9",
+  "transport": "tcp",
+  "signature_scheme": "hmac-sha256",
+  "kernel_name": "python3",
+  "jupyter_session": "/Users/leo/Pfizer-RAG-AI-Pipeline/Route_Queries.ipynb"
+}
