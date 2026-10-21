@@ -1,0 +1,13 @@
+{
+  "base_url": "/",
+  "hostname": "localhost",
+  "password": false,
+  "pid": 76272,
+  "port": 8888,
+  "root_dir": "/Users/leo/Pfizer-RAG-AI-Pipeline",
+  "secure": false,
+  "sock": "",
+  "token": "ba8896546c3c6430ecfc6d5b70f156439ae5cb3e829ee38d",
+  "url": "http://localhost:8888/",
+  "version": "2.21.0"
+}

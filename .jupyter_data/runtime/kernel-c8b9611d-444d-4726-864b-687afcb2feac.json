@@ -1,0 +1,13 @@
+{
+  "shell_port": 57374,
+  "iopub_port": 57375,
+  "stdin_port": 57376,
+  "control_port": 57378,
+  "hb_port": 57377,
+  "ip": "127.0.0.1",
+  "key": "f39f3f24-ec8a7ace1df4fd447cecc497",
+  "transport": "tcp",
+  "signature_scheme": "hmac-sha256",
+  "kernel_name": "python3",
+  "jupyter_session": "/Users/leo/Pfizer-RAG-AI-Pipeline/Designing_a_Page_Level_Detection_Strategy_Using_RAG.ipynb"
+}

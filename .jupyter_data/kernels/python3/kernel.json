@@ -1,6 +1,6 @@
 {
   "argv": [
-    "/Users/leo/jupyter-pandas-numpy/.venv/bin/python",
+    "/Users/leo/Pfizer-RAG-AI-Pipeline/.venv/bin/python",
     "-m",
     "ipykernel_launcher",
     "-f",

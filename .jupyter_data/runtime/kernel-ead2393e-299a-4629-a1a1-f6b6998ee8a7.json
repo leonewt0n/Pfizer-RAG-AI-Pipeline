@@ -1,0 +1,13 @@
+{
+  "shell_port": 58312,
+  "iopub_port": 58313,
+  "stdin_port": 58314,
+  "control_port": 58316,
+  "hb_port": 58315,
+  "ip": "127.0.0.1",
+  "key": "679e7410-51ccd7cee7b07051246a51f0",
+  "transport": "tcp",
+  "signature_scheme": "hmac-sha256",
+  "kernel_name": "python3",
+  "jupyter_session": "/Users/leo/Pfizer-RAG-AI-Pipeline/Full_Segmentation_Pipeline_with_Metadata_Output.ipynb"
+}
