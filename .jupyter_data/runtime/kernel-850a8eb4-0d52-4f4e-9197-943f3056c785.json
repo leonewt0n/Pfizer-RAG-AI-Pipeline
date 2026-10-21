@@ -1,0 +1,13 @@
+{
+  "shell_port": 51383,
+  "iopub_port": 51384,
+  "stdin_port": 51385,
+  "control_port": 51387,
+  "hb_port": 51386,
+  "ip": "127.0.0.1",
+  "key": "14e12ba1-00047622db54fc78d600cc61",
+  "transport": "tcp",
+  "signature_scheme": "hmac-sha256",
+  "kernel_name": "python3",
+  "jupyter_session": "/Users/leo/jupyter-pandas-numpy/Untitled1.ipynb"
+}

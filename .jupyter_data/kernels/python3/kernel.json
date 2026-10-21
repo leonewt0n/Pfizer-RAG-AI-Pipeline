@@ -1,0 +1,11 @@
+{
+  "argv": [
+    "/Users/leo/jupyter-pandas-numpy/.venv/bin/python",
+    "-m",
+    "ipykernel_launcher",
+    "-f",
+    "{connection_file}"
+  ],
+  "display_name": "Python (.venv)",
+  "language": "python"
+}

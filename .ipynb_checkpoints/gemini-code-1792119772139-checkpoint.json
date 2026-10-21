@@ -1,0 +1,186 @@
+{
+ "cells": [
+  {
+   "cell_type": "code",
+   "execution_count": 1,
+   "metadata": {"id": "cPp3RLbuRGAo"},
+   "outputs": [],
+   "source": [
+    "import torch\n",
+    "import os\n",
+    "from dotenv import load_dotenv\n",
+    "\n",
+    "%env LDFLAGS=-L/opt/homebrew/opt/jpeg/lib\n",
+    "%env CPPFLAGS=-I/opt/homebrew/opt/jpeg/include\n",
+    "%env LDFLAGS=\"-L/opt/homebrew/opt/zlib/lib -L/opt/homebrew/opt/jpeg/lib\"\n",
+    "%env CPPFLAGS=\"-I/opt/homebrew/opt/zlib/include -I/opt/homebrew/opt/jpeg/include\"\n",
+    "%env PKG_CONFIG_PATH=\"/opt/homebrew/opt/zlib/lib/pkgconfig:/opt/homebrew/opt/jpeg/lib/pkgconfig\"\n",
+    "\n",
+    "!pip install -q pillow llama-index llama-cpp-python python-dotenv pandas jupyter pymupdf llama-index-embeddings-huggingface llama-index-llms-llama-cpp\n",
+    "!pip install -q -U google-genai\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 2,
+   "metadata": {"id": "psrre0RXRRZh"},
+   "outputs": [],
+   "source": [
+    "import os\n",
+    "from google import genai\n",
+    "from google.genai import types\n",
+    "\n",
+    "GEMINI_API_KEY = os.getenv(\"GEMINI_API_KEY\", \"YOUR_API_KEY_HERE\")\n",
+    "\n",
+    "if not GEMINI_API_KEY or GEMINI_API_KEY == \"YOUR_API_KEY_HERE\":\n",
+    "    raise ValueError(\"Please set GEMINI_API_KEY in your environment or assign it here.\")\n",
+    "\n",
+    "client = genai.Client(api_key=GEMINI_API_KEY)\n",
+    "print(\"Gemini client initialized successfully!\")\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 3,
+   "metadata": {"id": "qXyDQ-kQMqSp"},
+   "outputs": [],
+   "source": [
+    "import os\n",
+    "from llama_cpp import Llama\n",
+    "\n",
+    "model_path = \"content/mistral.gguf\"\n",
+    "os.makedirs(\"content\", exist_ok=True)\n",
+    "if not os.path.exists(model_path):\n",
+    "    !wget https://huggingface.co/TheBloke/Mistral-7B-Instruct-v0.2-GGUF/resolve/main/mistral-7b-instruct-v0.2.Q4_K_M.gguf -O {model_path}\n",
+    "    print(f\"Model downloaded to {model_path}\")\n",
+    "\n",
+    "print(f\"Model file ready: {model_path} ({os.path.getsize(model_path) / (1024 * 1024):.2f} MB)\")\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 4,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "import fitz  # PyMuPDF\n",
+    "\n",
+    "pdf_path = \"sample-sdf-document.pdf\"\n",
+    "doc = fitz.open(pdf_path)\n",
+    "text = \"\\n\".join([page.get_text() for page in doc])\n",
+    "print(f\"Extracted {len(text.split())} words across {len(doc)} page(s).\")\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 5,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "from llama_index.core import VectorStoreIndex, Document, get_response_synthesizer\n",
+    "from llama_index.core.retrievers import VectorIndexRetriever\n",
+    "from llama_index.core.query_engine import RetrieverQueryEngine\n",
+    "from llama_index.core.settings import Settings\n",
+    "from llama_index.llms.llama_cpp import LlamaCPP\n",
+    "from llama_index.embeddings.huggingface import HuggingFaceEmbedding\n",
+    "\n",
+    "llm = LlamaCPP(\n",
+    "    model_path=\"content/mistral.gguf\",\n",
+    "    temperature=0.1,\n",
+    "    max_new_tokens=512,\n",
+    "    context_window=2048,\n",
+    "    model_kwargs={\"n_gpu_layers\": 1}\n",
+    ")\n",
+    "\n",
+    "embed_model = HuggingFaceEmbedding(model_name=\"BAAI/bge-small-en-v1.5\")\n",
+    "Settings.llm = llm\n",
+    "Settings.embed_model = embed_model\n",
+    "\n",
+    "documents = [Document(text=text)]\n",
+    "index = VectorStoreIndex.from_documents(documents)\n",
+    "retriever = VectorIndexRetriever(index=index, similarity_top_k=2)\n",
+    "response_synthesizer = get_response_synthesizer(response_mode=\"tree_summarize\")\n",
+    "mistral_engine = RetrieverQueryEngine(retriever=retriever, response_synthesizer=response_synthesizer)\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 6,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "import time\n",
+    "import pandas as pd\n",
+    "\n",
+    "queries = [\n",
+    "    \"What sterilization method was used for this product?\",\n",
+    "    \"Summarize the key specifications in this document.\",\n",
+    "    \"What are the storage conditions for this product?\"\n",
+    "]\n",
+    "\n",
+    "def query_gemini(q: str, context: str):\n",
+    "    prompt = f\"Context from SDF Document:\\n{context}\\n\\nQuestion: {q}\\n\\nAnswer:\"\n",
+    "    t0 = time.perf_counter()\n",
+    "    res = client.models.generate_content(\n",
+    "        model=\"gemini-2.5-flash\",\n",
+    "        contents=prompt\n",
+    "    )\n",
+    "    elapsed = time.perf_counter() - t0\n",
+    "    return res.text.strip(), elapsed\n",
+    "\n",
+    "benchmark_rows = []\n",
+    "\n",
+    "for q in queries:\n",
+    "    print(f\"\\nEvaluating: {q}\")\n",
+    "    \n",
+    "    # Test Mistral\n",
+    "    t0_m = time.perf_counter()\n",
+    "    m_resp = mistral_engine.query(q)\n",
+    "    lat_m = time.perf_counter() - t0_m\n",
+    "    m_text = str(m_resp).strip()\n",
+    "    \n",
+    "    # Test Gemini\n",
+    "    g_text, lat_g = query_gemini(q, text)\n",
+    "    \n",
+    "    benchmark_rows.append({\n",
+    "        \"Query\": q,\n",
+    "        \"Mistral Latency (s)\": round(lat_m, 2),\n",
+    "        \"Gemini Latency (s)\": round(lat_g, 2),\n",
+    "        \"Mistral Length (words)\": len(m_text.split()),\n",
+    "        \"Gemini Length (words)\": len(g_text.split()),\n",
+    "        \"Mistral Output\": m_text,\n",
+    "        \"Gemini Output\": g_text\n",
+    "    })\n",
+    "\n",
+    "df_results = pd.DataFrame(benchmark_rows)\n",
+    "display(df_results[[\"Query\", \"Mistral Latency (s)\", \"Gemini Latency (s)\", \"Mistral Length (words)\", \"Gemini Length (words)\"]])\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 7,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Inspect full text responses side-by-side\n",
+    "for idx, row in df_results.iterrows():\n",
+    "    print(f\"=== Question: {row['Query']} ===\")\n",
+    "    print(f\"\\n--- Mistral (Time: {row['Mistral Latency (s)']}s) ---\\n{row['Mistral Output']}\")\n",
+    "    print(f\"\\n--- Gemini (Time: {row['Gemini Latency (s)']}s) ---\\n{row['Gemini Output']}\\n\\n\")\n"
+   ]
+  }
+ ],
+ "metadata": {
+  "kernelspec": {
+   "display_name": "Python (.venv)",
+   "language": "python",
+   "name": "python3"
+  },
+  "language_info": {
+   "name": "python",
+   "version": "3.14.7"
+  }
+ },
+ "nbformat": 4,
+ "nbformat_minor": 4
+}

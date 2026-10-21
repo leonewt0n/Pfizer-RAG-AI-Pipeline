@@ -1,0 +1,13 @@
+{
+  "shell_port": 52038,
+  "iopub_port": 52039,
+  "stdin_port": 52040,
+  "control_port": 52042,
+  "hb_port": 52041,
+  "ip": "127.0.0.1",
+  "key": "7e803cef-181f8812603d2258c77eb73e",
+  "transport": "tcp",
+  "signature_scheme": "hmac-sha256",
+  "kernel_name": "python3",
+  "jupyter_session": "/Users/leo/jupyter-pandas-numpy/Retriever_Tuning_Playground.ipynb"
+}

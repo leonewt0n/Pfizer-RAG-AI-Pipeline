@@ -1,0 +1,13 @@
+{
+  "shell_port": 57504,
+  "iopub_port": 57505,
+  "stdin_port": 57506,
+  "control_port": 57508,
+  "hb_port": 57507,
+  "ip": "127.0.0.1",
+  "key": "3335c0a8-f01f8cc64c7f74836a2beb1d",
+  "transport": "tcp",
+  "signature_scheme": "hmac-sha256",
+  "kernel_name": "python3",
+  "jupyter_session": "/Users/leo/jupyter-pandas-numpy/Copy_of_Designing_a_Page_Level_Detection_Strategy_Using_RAG.ipynb"
+}

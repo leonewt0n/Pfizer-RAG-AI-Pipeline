@@ -1,0 +1,13 @@
+{
+  "shell_port": 49873,
+  "iopub_port": 49874,
+  "stdin_port": 49875,
+  "control_port": 49877,
+  "hb_port": 49876,
+  "ip": "127.0.0.1",
+  "key": "a2fbe8ea-70586268b72618b36d2405de",
+  "transport": "tcp",
+  "signature_scheme": "hmac-sha256",
+  "kernel_name": "python3",
+  "jupyter_session": "/Users/leo/jupyter-pandas-numpy/local-OCR three way comparision.ipynb"
+}

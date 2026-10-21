@@ -1,0 +1,13 @@
+{
+  "base_url": "/",
+  "hostname": "localhost",
+  "password": false,
+  "pid": 3113,
+  "port": 8888,
+  "root_dir": "/Users/leo/jupyter-pandas-numpy",
+  "secure": false,
+  "sock": "",
+  "token": "30cac113874d1f0bdefef36b907202518caa53fd28e0e440",
+  "url": "http://localhost:8888/",
+  "version": "2.21.0"
+}

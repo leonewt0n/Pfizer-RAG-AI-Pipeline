@@ -1,0 +1,13 @@
+{
+  "shell_port": 57210,
+  "iopub_port": 57211,
+  "stdin_port": 57212,
+  "control_port": 57214,
+  "hb_port": 57213,
+  "ip": "127.0.0.1",
+  "key": "093a1fbd-4d53376630d019eb584cfce5",
+  "transport": "tcp",
+  "signature_scheme": "hmac-sha256",
+  "kernel_name": "python3",
+  "jupyter_session": "/Users/leo/jupyter-pandas-numpy/Comparing_Open_Source_Embedding_Models_for_RAG.ipynb"
+}

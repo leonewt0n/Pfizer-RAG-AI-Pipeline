@@ -1,0 +1,13 @@
+{
+  "shell_port": 49827,
+  "iopub_port": 49828,
+  "stdin_port": 49829,
+  "control_port": 49831,
+  "hb_port": 49830,
+  "ip": "127.0.0.1",
+  "key": "d9be1fb2-eead43a080c5f4af0d0f03f4",
+  "transport": "tcp",
+  "signature_scheme": "hmac-sha256",
+  "kernel_name": "python3",
+  "jupyter_session": "/Users/leo/jupyter-pandas-numpy/Local_LLM_Advanced_PDF_Retrieval_&_Optimization_with_LlamaIndex.ipynb"
+}

@@ -1,0 +1,13 @@
+{
+  "shell_port": 57729,
+  "iopub_port": 57730,
+  "stdin_port": 57731,
+  "control_port": 57733,
+  "hb_port": 57732,
+  "ip": "127.0.0.1",
+  "key": "c505f674-9dd8096c359fd80dca84055b",
+  "transport": "tcp",
+  "signature_scheme": "hmac-sha256",
+  "kernel_name": "python3",
+  "jupyter_session": "/Users/leo/jupyter-pandas-numpy/RAG_with_Open_Source_models.ipynb"
+}
