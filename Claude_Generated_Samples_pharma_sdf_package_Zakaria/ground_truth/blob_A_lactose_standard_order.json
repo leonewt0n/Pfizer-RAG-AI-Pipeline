@@ -1,0 +1,58 @@
+{
+  "file": "blob_A_lactose_standard_order.pdf",
+  "note": "Clean package, documents in the usual order. 9 pages, 7 documents; two documents span 2 pages.",
+  "pages": [
+    {
+      "page": 1,
+      "is_new_doc": "Yes",
+      "doc_type": "Cover Letter",
+      "_source": "01_cover_letter_AL-260817-03.pdf"
+    },
+    {
+      "page": 2,
+      "is_new_doc": "Yes",
+      "doc_type": "Certificate of Quality",
+      "_source": "02_certificate_of_quality_AL-260817-03.pdf"
+    },
+    {
+      "page": 3,
+      "is_new_doc": "Yes",
+      "doc_type": "Packaging Specification",
+      "_source": "03_packaging_specification_AL-260817-03.pdf"
+    },
+    {
+      "page": 4,
+      "is_new_doc": "No",
+      "_source": "03_packaging_specification_AL-260817-03.pdf"
+    },
+    {
+      "page": 5,
+      "is_new_doc": "Yes",
+      "doc_type": "BSE/TSE Declaration",
+      "_source": "04_bse_tse_declaration_AL-260817-03.pdf"
+    },
+    {
+      "page": 6,
+      "is_new_doc": "Yes",
+      "doc_type": "Material Description",
+      "_source": "05_material_description_AL-260817-03.pdf"
+    },
+    {
+      "page": 7,
+      "is_new_doc": "Yes",
+      "doc_type": "Supplier Qualification",
+      "_source": "06_supplier_qualification_AL-260817-03.pdf"
+    },
+    {
+      "page": 8,
+      "is_new_doc": "No",
+      "_source": "06_supplier_qualification_AL-260817-03.pdf"
+    },
+    {
+      "page": 9,
+      "is_new_doc": "Yes",
+      "doc_type": "Chain of Custody",
+      "_source": "07_chain_of_custody_AL-260817-03.pdf"
+    }
+  ]
+}

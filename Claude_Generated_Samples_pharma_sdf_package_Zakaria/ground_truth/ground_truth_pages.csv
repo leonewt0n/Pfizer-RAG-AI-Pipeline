@@ -1,0 +1,30 @@
+Blob,Page,is_new_doc,doc_type,Product,Lot,Source file,Page in doc,Pages in doc
+blob_A_lactose_standard_order.pdf,1,Yes,Cover Letter,Lactose Monohydrate,AL-260817-03,01_cover_letter_AL-260817-03.pdf,1,1
+blob_A_lactose_standard_order.pdf,2,Yes,Certificate of Quality,Lactose Monohydrate,AL-260817-03,02_certificate_of_quality_AL-260817-03.pdf,1,1
+blob_A_lactose_standard_order.pdf,3,Yes,Packaging Specification,Lactose Monohydrate,AL-260817-03,03_packaging_specification_AL-260817-03.pdf,1,2
+blob_A_lactose_standard_order.pdf,4,No,,Lactose Monohydrate,AL-260817-03,03_packaging_specification_AL-260817-03.pdf,2,2
+blob_A_lactose_standard_order.pdf,5,Yes,BSE/TSE Declaration,Lactose Monohydrate,AL-260817-03,04_bse_tse_declaration_AL-260817-03.pdf,1,1
+blob_A_lactose_standard_order.pdf,6,Yes,Material Description,Lactose Monohydrate,AL-260817-03,05_material_description_AL-260817-03.pdf,1,1
+blob_A_lactose_standard_order.pdf,7,Yes,Supplier Qualification,Lactose Monohydrate,AL-260817-03,06_supplier_qualification_AL-260817-03.pdf,1,2
+blob_A_lactose_standard_order.pdf,8,No,,Lactose Monohydrate,AL-260817-03,06_supplier_qualification_AL-260817-03.pdf,2,2
+blob_A_lactose_standard_order.pdf,9,Yes,Chain of Custody,Lactose Monohydrate,AL-260817-03,07_chain_of_custody_AL-260817-03.pdf,1,1
+blob_B_magnesium_stearate_shuffled.pdf,1,Yes,BSE/TSE Declaration,Magnesium Stearate,VO-260729-11,04_bse_tse_declaration_VO-260729-11.pdf,1,1
+blob_B_magnesium_stearate_shuffled.pdf,2,Yes,Certificate of Quality,Magnesium Stearate,VO-260729-11,02_certificate_of_quality_VO-260729-11.pdf,1,1
+blob_B_magnesium_stearate_shuffled.pdf,3,Yes,Cover Letter,Magnesium Stearate,VO-260729-11,01_cover_letter_VO-260729-11.pdf,1,1
+blob_B_magnesium_stearate_shuffled.pdf,4,Yes,Material Description,Magnesium Stearate,VO-260729-11,05_material_description_VO-260729-11.pdf,1,1
+blob_B_magnesium_stearate_shuffled.pdf,5,Yes,Packaging Specification,Magnesium Stearate,VO-260729-11,03_packaging_specification_VO-260729-11.pdf,1,2
+blob_B_magnesium_stearate_shuffled.pdf,6,No,,Magnesium Stearate,VO-260729-11,03_packaging_specification_VO-260729-11.pdf,2,2
+blob_B_magnesium_stearate_shuffled.pdf,7,Yes,Chain of Custody,Magnesium Stearate,VO-260729-11,07_chain_of_custody_VO-260729-11.pdf,1,1
+blob_B_magnesium_stearate_shuffled.pdf,8,Yes,Supplier Qualification,Magnesium Stearate,VO-260729-11,06_supplier_qualification_VO-260729-11.pdf,1,2
+blob_B_magnesium_stearate_shuffled.pdf,9,No,,Magnesium Stearate,VO-260729-11,06_supplier_qualification_VO-260729-11.pdf,2,2
+blob_C_mixed_lots_with_noise.pdf,1,Yes,Other,Lactose Monohydrate,AL-260817-03,99_fax_cover_AL-260817-03.pdf,1,1
+blob_C_mixed_lots_with_noise.pdf,2,Yes,Cover Letter,Lactose Monohydrate,AL-260817-03,01_cover_letter_AL-260817-03.pdf,1,1
+blob_C_mixed_lots_with_noise.pdf,3,Yes,Certificate of Quality,Lactose Monohydrate,AL-260817-03,02_certificate_of_quality_AL-260817-03.pdf,1,1
+blob_C_mixed_lots_with_noise.pdf,4,Yes,Certificate of Quality,Lactose Monohydrate,AL-260822-01,coq_l2.pdf,1,1
+blob_C_mixed_lots_with_noise.pdf,5,Yes,BSE/TSE Declaration,Lactose Monohydrate,AL-260817-03,04_bse_tse_declaration_AL-260817-03.pdf,1,1
+blob_C_mixed_lots_with_noise.pdf,6,Yes,Other,Lactose Monohydrate,AL-260817-03,98_invoice_AL-260817-03.pdf,1,1
+blob_C_mixed_lots_with_noise.pdf,7,Yes,Cover Letter,Magnesium Stearate,VO-260729-11,01_cover_letter_VO-260729-11.pdf,1,1
+blob_C_mixed_lots_with_noise.pdf,8,Yes,Certificate of Quality,Magnesium Stearate,VO-260729-11,02_certificate_of_quality_VO-260729-11.pdf,1,1
+blob_C_mixed_lots_with_noise.pdf,9,Yes,Packaging Specification,Magnesium Stearate,VO-260729-11,03_packaging_specification_VO-260729-11.pdf,1,2
+blob_C_mixed_lots_with_noise.pdf,10,No,,Magnesium Stearate,VO-260729-11,03_packaging_specification_VO-260729-11.pdf,2,2
+blob_C_mixed_lots_with_noise.pdf,11,Yes,Chain of Custody,Magnesium Stearate,VO-260729-11,07_chain_of_custody_VO-260729-11.pdf,1,1
