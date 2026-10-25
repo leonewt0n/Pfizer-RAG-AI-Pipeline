@@ -90,6 +90,7 @@ class LlamaCppInstruct:
                 filename=filename,
                 n_gpu_layers=n_gpu_layers,
                 n_ctx=n_ctx,
+                flash_attn=True,
                 verbose=True,
             )
         except Exception as exc:
