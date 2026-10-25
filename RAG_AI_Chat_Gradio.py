@@ -835,7 +835,8 @@ ocr_llm = PaddlePageOcr()
 classifier = HeaderMetadata(instruct_llm)
 
 print("[2/3] Loading embedding model (BAAI/bge-small-en-v1.5)...", flush=True)
-embed_model = SentenceTransformer("BAAI/bge-small-en-v1.5", device="cpu")
+
+embed_model = SentenceTransformer("BAAI/bge-small-en-v1.5")
 
 
 def new_store() -> EnhancedDocumentStore:
