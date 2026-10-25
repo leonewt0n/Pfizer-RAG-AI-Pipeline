@@ -78,7 +78,7 @@ class LlamaCppInstruct:
         self,
         repo_id: str,
         filename: str,
-        n_ctx: int = 4096,
+        n_ctx: int = 32000,
         n_gpu_layers: int = -1,
         temperature: float = 0.0,
     ):
@@ -936,7 +936,7 @@ def export_chat_history(history) -> str:
 
 
 print("[3/3] Starting Gradio interface...", flush=True)
-chatbot_kwargs = {"label": "Chat History", "height": 380}
+chatbot_kwargs = {"label": "Chat History", "height": "70vh"}
 if "type" in inspect.signature(gr.Chatbot.__init__).parameters:
     chatbot_kwargs["type"] = "messages"
 
