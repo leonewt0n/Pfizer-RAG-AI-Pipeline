@@ -1,0 +1,33 @@
+Step 3: Complete Your Presentation
+Fill in each slide of the template:
+Slide 1: Title Slide
+Replace the placeholder text with your name and email address
+Slide 2: Problem Statement
+Write a clear one-liner that summarizes the real-world problem your pipeline addresses (e.g., "Extracting compliance data from unstructured pharmaceutical documents")
+In the Challenge section, explain what makes this problem difficult — mention things like document variety, poor scan quality, or lack of structure
+In the Solution section, briefly describe how your RAG pipeline solves this — mention key components like OCR, chunking, and retrieval
+Fill in the Pain Point / Solution table with 3-4 specific problems your pipeline tackles and how it addresses each one
+Slide 3: System Architecture
+Create or insert a simple pipeline flow diagram showing how data moves through your system (Document Input → OCR → Chunking → Embeddings → Vector Storage → Retrieval → LLM Response)
+Fill in the Component Specifications table with the actual tools and settings you used — be specific about model names, chunk sizes, top-K values, etc.
+Slide 4: Pipeline Performance Metrics
+Run your pipeline on your test set and record the results
+Add Retrieval Performance: Calculate Recall@K, MRR, Precision@K based on your test queries
+Add End-to-End Accuracy: What percentage of answers were correct? Did the system cite sources accurately?
+Add System Performance: Measure how long each step takes — OCR processing time, retrieval latency, LLM generation time
+Slides 5-6: Pipeline in Action
+Pick 1-2 real queries you tested and show them in action
+For each query: show the question, the retrieved chunks with similarity scores, and the final LLM answer
+Take screenshots of your Gradio chatbot UI showing the query and response — this makes your work tangible and demo-ready
+Slide 7: Design Decision Analysis
+Explain why you chose each component (e.g., "Chose MiniLM embeddings for speed on limited hardware")
+Fill in the Model Selection Reasoning table with your actual choices and rationale
+In the Trade-offs section, be honest about what you sacrificed — did you choose speed over accuracy? Simplicity over features?
+Slide 8: Current Limitations & Next Steps
+List 2-3 things your pipeline struggles with (e.g., handwritten text, low-DPI scans, tables)
+For each limitation, briefly explain why it happens
+In the Proposed Enhancements section, describe what you would improve next — short-term fixes, medium-term upgrades, and long-term vision
+Slide 9: Project Impact & Learning Outcomes
+Reflect on what you learned technically — new tools, techniques, or concepts
+Describe the potential business impact — how much time/effort could this save?
+List the skills you developed — both technical (Python, RAG, OCR) and soft skills (problem-solving, documentation)

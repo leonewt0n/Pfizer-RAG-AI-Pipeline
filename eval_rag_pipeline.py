@@ -1,10 +1,12 @@
-# eval_rag_pipeline.py
+
+import csv
 import json
 import os
 import re
 import sys
+import tempfile
 import time
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Tuple
 
 # Reuse the running Gradio main module if launched from the UI; otherwise import normally
 rag = (
@@ -14,95 +16,26 @@ rag = (
 )
 
 # =====================================================================
-# 1. DEFAULT FALLBACK GROUND TRUTH (Used if ground_truth.json is absent)
-# =====================================================================
-
-DEFAULT_GROUND_TRUTH = {
-    "pdf_path": "sample-sdf-document.pdf",
-    "page_header_fields": {
-        "2": {
-            "Product": "ÄKTA ready Gradient Flow Section With Inlets",
-            "Lot Number": "17242818",
-            "Date of Manufacture": "20210126",
-            "Expiration Date": "20230126",
-            "Product Article Number": "29-1846-12",
-            "Product Description": "High Flow Gradient C, Modified, ÄKTA ready",
-            "Country of Origin": "USA",
-        },
-        "3": {
-            "Product": "AKTA ready Low Flow Kit",
-            "Lot Number": "18356721",
-            "Product Article Number": "28 9301 82",
-            "Date of Manufacture": "20240315",
-            "Product Description": "Low Flow Kit, AKTA ready",
-            "Expiration Date": "20260315",
-            "Country of Origin": "USA",
-        },
-    },
-    "rag_test_cases": [
-        {
-            "id": "Q1",
-            "question": "What is the minimum recommended storage temperature in °C for standard ÄKTA ready flow kits?",
-            "relevant_pages": [1],
-            "expected_field_substring": "5",
-            "expected_numeric": 5.0,
-            "reference_answer": "The recommended storage temperature for standard ÄKTA ready flow kits is greater than +5°C.",
-        },
-        {
-            "id": "Q2",
-            "question": "What is the maximum operating temperature in °C for the High Flow Kit F (Part Number 29477427)?",
-            "relevant_pages": [1],
-            "expected_field_substring": "40",
-            "expected_numeric": 40.0,
-            "reference_answer": "The operating temperature for High Flow Kit F (Part Number 29477427) is +2°C to +40°C.",
-        },
-        {
-            "id": "Q3",
-            "question": "What is the Lot Number and Expiration Date for the ÄKTA ready Gradient Flow Section With Inlets?",
-            "relevant_pages": [2],
-            "expected_field_substring": "17242818",
-            "expected_numeric": None,
-            "reference_answer": "For the ÄKTA ready Gradient Flow Section With Inlets, the Lot Number is 17242818 and the Expiration Date is 20230126.",
-        },
-        {
-            "id": "Q4",
-            "question": "What is the maximum Gamma Irradiation limit in kGy for the Inlets on Lot Number 17242818?",
-            "relevant_pages": [2],
-            "expected_field_substring": "40.0",
-            "expected_numeric": 40.0,
-            "reference_answer": "The Gamma Irradiation limit for the Inlets is 25.0-40.0 kGy.",
-        },
-        {
-            "id": "Q5",
-            "question": "What is the maximum pressure in bar for the Pressure Integrity test on Lot Number 18356721?",
-            "relevant_pages": [3],
-            "expected_field_substring": "0.5",
-            "expected_numeric": 0.5,
-            "reference_answer": "The Pressure Integrity test specification for Lot Number 18356721 is Max 0.5 bar with a 5 min hold, and the result is Pass.",
-        },
-    ],
-}
-
-# =====================================================================
-# 2. METRIC HELPERS & GROUND TRUTH LOADER
+# 1. GROUND TRUTH LOADER & METRIC HELPERS
 # =====================================================================
 
 
 def load_ground_truth(
     gt_file: Any = None, default_path: str = "ground_truth.json"
 ) -> Dict[str, Any]:
-    """Loads ground truth from an uploaded Gradio file, local JSON file, or fallback dict."""
+    """Loads ground truth strictly from an uploaded Gradio file or local JSON file."""
     path = (
         gt_file.name
         if hasattr(gt_file, "name")
         else (str(gt_file) if gt_file else default_path)
     )
-    if path and os.path.exists(path):
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    if gt_file is not None:
-        raise FileNotFoundError(f"Uploaded ground truth file not found at: {path}")
-    return DEFAULT_GROUND_TRUTH
+    if not path or not os.path.exists(path):
+        raise FileNotFoundError(
+            f"Ground truth JSON file not found at '{path}'. "
+            "Please upload a JSON file in the UI or place 'ground_truth.json' in the project directory."
+        )
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
 
 
 def normalize_str(s: Any) -> str:
@@ -130,7 +63,7 @@ def extract_numbers(text: str) -> List[float]:
 
 
 # =====================================================================
-# 3. PIPELINE EVALUATOR FOR RAG_AI_Chat_Gradio.py
+# 2. PIPELINE EVALUATOR FOR RAG_AI_Chat_Gradio.py
 # =====================================================================
 
 
@@ -320,22 +253,16 @@ def evaluate_gradio_rag(gt: Dict[str, Any], top_k: int = 2) -> Dict[str, Any]:
 
 
 # =====================================================================
-# 4. MARKDOWN TABLE FORMATTER FOR GRADIO UI
+# 3. MARKDOWN TABLE FORMATTER & CSV EXPORTER FOR GRADIO UI
 # =====================================================================
 
 
-def run_eval_as_markdown(gt_file: Any = None, top_k: int = 2) -> str:
-    """Runs the evaluation and formats the results as Markdown tables for Gradio."""
-    try:
-        gt = load_ground_truth(gt_file)
-    except Exception as exc:
-        return f"❌ **Could not load Ground Truth JSON:** `{exc}`"
-
-    top_k_int = int(top_k)
-    report = evaluate_gradio_rag(gt, top_k=top_k_int)
+def format_report_as_markdown(report: Dict[str, Any], top_k: int = 2) -> str:
+    """Formats an evaluation report dictionary into Markdown tables."""
     if "error" in report:
         return f"❌ **Evaluation Error:** {report['error']}"
 
+    top_k_int = int(top_k)
     sm = report["summary_metrics"]
     recall_key = f"3a_retrieval_recall@{top_k_int}_pct"
 
@@ -402,6 +329,156 @@ def run_eval_as_markdown(gt_file: Any = None, top_k: int = 2) -> str:
     return "\n".join(md)
 
 
+def save_report_to_csv(report: Dict[str, Any], top_k: int = 2) -> str:
+    """Writes all 3 evaluation sections (Summary, Headers, Queries) to a single CSV file."""
+    csv_path = os.path.join(tempfile.gettempdir(), "rag_evaluation_report.csv")
+    sm = report.get("summary_metrics", {})
+    recall_key = f"3a_retrieval_recall@{int(top_k)}_pct"
+
+    with open(csv_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+
+        # Section 1: Summary Metrics
+        writer.writerow(["=== 1. SUMMARY METRICS SCORECARD ==="])
+        writer.writerow(["Metric", "Score"])
+        writer.writerow(
+            [
+                "1a. Header Field Accuracy (Exact Match %)",
+                sm.get("1a_header_field_exact_match_pct", 0.0),
+            ]
+        )
+        writer.writerow(
+            [
+                "1b. QA Field Accuracy (Exact Match %)",
+                sm.get("1b_qa_field_exact_match_pct", 0.0),
+            ]
+        )
+        writer.writerow(
+            [
+                "2. Numeric Relative Error (Mean %)",
+                sm.get("2_numeric_mean_relative_error_pct", 0.0),
+            ]
+        )
+        writer.writerow(
+            [f"3a. Retrieval Recall@{int(top_k)} (%)", sm.get(recall_key, 0.0)]
+        )
+        writer.writerow(["3b. Retrieval MRR", sm.get("3b_retrieval_mrr", 0.0)])
+        writer.writerow(
+            [
+                "4. Readability (ROUGE-1 F1 %)",
+                sm.get("4_readability_rouge1_f1_pct", 0.0),
+            ]
+        )
+        writer.writerow(
+            ["5. Avg Latency (seconds)", sm.get("5_avg_latency_seconds", 0.0)]
+        )
+        writer.writerow(
+            [
+                "6. Robustness (Error Rate %)",
+                sm.get("6_robustness_error_rate_pct", 0.0),
+            ]
+        )
+        writer.writerow([])
+
+        # Section 2: Header Field Extraction
+        writer.writerow(["=== 2. HEADER FIELD EXTRACTION ==="])
+        writer.writerow(["Page", "Field", "Ground Truth", "Extracted", "Exact Match"])
+        for page_label, fields in report.get("header_extraction_breakdown", {}).items():
+            for field_name, info in fields.items():
+                writer.writerow(
+                    [
+                        page_label,
+                        field_name,
+                        info.get("gt", ""),
+                        info.get("pred", ""),
+                        "PASS" if info.get("exact_match") else "FAIL",
+                    ]
+                )
+        writer.writerow([])
+
+        # Section 3: Per-Query RAG Breakdown
+        writer.writerow(["=== 3. PER-QUERY RAG BREAKDOWN ==="])
+        writer.writerow(
+            [
+                "Query ID",
+                "Routed To",
+                "Retrieved Pages",
+                "Target Pages",
+                "Recall@K (%)",
+                "MRR",
+                "Field Match",
+                "Numeric Rel Error (%)",
+                "ROUGE-1 F1 (%)",
+                "Latency (s)",
+                "Generated Answer",
+            ]
+        )
+        for q in report.get("query_breakdown", []):
+            if "error" in q:
+                writer.writerow(
+                    [
+                        q.get("id"),
+                        "ERROR",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "FAIL",
+                        "",
+                        "",
+                        "",
+                        q.get("error"),
+                    ]
+                )
+                continue
+            writer.writerow(
+                [
+                    q.get("id", ""),
+                    q.get("routed_to", ""),
+                    q.get("retrieved_pages", []),
+                    q.get("relevant_pages", []),
+                    q.get("recall@k", 0.0),
+                    q.get("rr", 0.0),
+                    "PASS" if q.get("field_match") else "FAIL",
+                    (
+                        q.get("numeric_rel_error_pct")
+                        if q.get("numeric_rel_error_pct") is not None
+                        else "N/A"
+                    ),
+                    q.get("rouge1_f1_pct", 0.0),
+                    q.get("latency_sec", 0.0),
+                    " ".join(str(q.get("answer", "")).split()),
+                ]
+            )
+
+    return csv_path
+
+
+def run_eval_as_markdown(gt_file: Any = None, top_k: int = 2) -> str:
+    """Runs the evaluation and returns only the Markdown tables string."""
+    md_output, _ = run_eval_with_csv(gt_file, top_k=top_k)
+    return md_output
+
+
+def run_eval_with_csv(
+    gt_file: Any = None, top_k: int = 2
+) -> Tuple[str, Optional[str]]:
+    """Runs the evaluation once and returns (markdown_tables_str, csv_file_path) for Gradio."""
+    try:
+        gt = load_ground_truth(gt_file)
+    except Exception as exc:
+        return f"❌ **Could not load Ground Truth JSON:** `{exc}`", None
+
+    top_k_int = int(top_k)
+    report = evaluate_gradio_rag(gt, top_k=top_k_int)
+    if "error" in report:
+        return f"❌ **Evaluation Error:** {report['error']}", None
+
+    md_output = format_report_as_markdown(report, top_k=top_k_int)
+    csv_path = save_report_to_csv(report, top_k=top_k_int)
+    return md_output, csv_path
+
+
 if __name__ == "__main__":
     gt_data = load_ground_truth()
     report = evaluate_gradio_rag(gt_data, top_k=2)
@@ -412,4 +489,6 @@ if __name__ == "__main__":
 
     with open("eval_report.json", "w", encoding="utf-8") as f:
         json.dump(report, f, indent=2, ensure_ascii=False)
-    print("\n✅ Saved full diagnostic report to 'eval_report.json'")
+    csv_file = save_report_to_csv(report, top_k=2)
+    print(f"\n✅ Saved JSON report to 'eval_report.json' and CSV report to '{csv_file}'")
+
