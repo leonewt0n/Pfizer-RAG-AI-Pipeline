@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import os
 import sys
+import atexit
+
 
 # Prevent macOS OpenMP / fork crashes between faiss, torch, and llama.cpp
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
@@ -1010,3 +1012,5 @@ with gr.Blocks(title="Pharmaceutical Document Q&A") as demo:
        # outputs=eval_output_md,
 if __name__ == "__main__":
     demo.launch(inbrowser=True)
+    # ✅ Add this atexit hook to release Metal GPU buffers cleanly on Ctrl+C
+    atexit.register(lambda: instruct_llm.llm.close() if hasattr(instruct_llm, "llm") else None)
