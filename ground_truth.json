@@ -1,0 +1,65 @@
+{
+  "pdf_path": "sample-sdf-document.pdf",
+  "page_header_fields": {
+    "2": {
+      "Product": "ÄKTA ready Gradient Flow Section With Inlets",
+      "Lot Number": "17242818",
+      "Date of Manufacture": "20210126",
+      "Expiration Date": "20230126",
+      "Product Article Number": "29-1846-12",
+      "Product Description": "High Flow Gradient C, Modified, ÄKTA ready",
+      "Country of Origin": "USA"
+    },
+    "3": {
+      "Product": "AKTA ready Low Flow Kit",
+      "Lot Number": "18356721",
+      "Product Article Number": "28 9301 82",
+      "Date of Manufacture": "20240315",
+      "Product Description": "Low Flow Kit, AKTA ready",
+      "Expiration Date": "20260315",
+      "Country of Origin": "USA"
+    }
+  },
+  "rag_test_cases": [
+    {
+      "id": "Q1",
+      "question": "What is the minimum recommended storage temperature in °C for standard ÄKTA ready flow kits?",
+      "relevant_pages": [1],
+      "expected_field_substring": "5",
+      "expected_numeric": 5.0,
+      "reference_answer": "The recommended storage temperature for standard ÄKTA ready flow kits is greater than +5°C."
+    },
+    {
+      "id": "Q2",
+      "question": "What is the maximum operating temperature in °C for the High Flow Kit F (Part Number 29477427)?",
+      "relevant_pages": [1],
+      "expected_field_substring": "40",
+      "expected_numeric": 40.0,
+      "reference_answer": "The operating temperature for High Flow Kit F (Part Number 29477427) is +2°C to +40°C."
+    },
+    {
+      "id": "Q3",
+      "question": "What is the Lot Number and Expiration Date for the ÄKTA ready Gradient Flow Section With Inlets?",
+      "relevant_pages": [2],
+      "expected_field_substring": "17242818",
+      "expected_numeric": null,
+      "reference_answer": "For the ÄKTA ready Gradient Flow Section With Inlets, the Lot Number is 17242818 and the Expiration Date is 20230126."
+    },
+    {
+      "id": "Q4",
+      "question": "What is the maximum Gamma Irradiation limit in kGy for the Inlets on Lot Number 17242818?",
+      "relevant_pages": [2],
+      "expected_field_substring": "40.0",
+      "expected_numeric": 40.0,
+      "reference_answer": "The Gamma Irradiation limit for the Inlets is 25.0-40.0 kGy."
+    },
+    {
+      "id": "Q5",
+      "question": "What is the maximum pressure in bar for the Pressure Integrity test on Lot Number 18356721?",
+      "relevant_pages": [3],
+      "expected_field_substring": "0.5",
+      "expected_numeric": 0.5,
+      "reference_answer": "The Pressure Integrity test specification for Lot Number 18356721 is Max 0.5 bar with a 5 min hold, and the result is Pass."
+    }
+  ]
+}

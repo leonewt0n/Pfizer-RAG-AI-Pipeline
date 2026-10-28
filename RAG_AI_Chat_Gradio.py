@@ -987,5 +987,20 @@ with gr.Blocks(title="Pharmaceutical Document Q&A") as demo:
         fn=export_chat_history, inputs=chatbot, outputs=download_file_output
     )
 
+    # Inside `with gr.Column(scale=1):`
+    with gr.Accordion("🧪 Run Automated Evaluation", open=True):
+        gt_file_input = gr.File(
+            label="📋 Ground Truth JSON (optional, defaults to ground_truth.json)",
+            file_types=[".json"],
+        )
+        eval_btn = gr.Button("▶️ Run 6-Metric Evaluation Suite", variant="primary")
+
+    # Place the table output full-width below the main Row (still inside `with gr.Blocks(...) as demo:`)
+    eval_output_md = gr.Markdown(label="Evaluation Scorecard")
+    eval_btn.click(
+        fn=lambda gt_f, k: __import__("eval_rag_pipeline").run_eval_as_markdown(gt_f, top_k=k),
+        inputs=[gt_file_input, top_k],
+        outputs=eval_output_md,
+    )
 if __name__ == "__main__":
     demo.launch(inbrowser=True)
