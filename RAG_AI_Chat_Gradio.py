@@ -24,12 +24,14 @@ os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
+import gc
 import inspect
 import json
 import re
 import tempfile
 import time
-from dataclasses import dataclass, field
+import zipfile
+from dataclasses import asdict, dataclass, field
 from typing import Dict, List, Optional, Tuple
 
 print("[Startup] Importing libraries...", flush=True)
@@ -43,6 +45,12 @@ from sentence_transformers import SentenceTransformer
 UNPARSED_LABEL = "Unlabeled"
 OCR_RENDER_DPI = 150
 MIN_EMBEDDED_CHARS = 50
+DEFAULT_TOP_K = 4
+EMBED_MODEL_NAME = "BAAI/bge-small-en-v1.5"
+DEFAULT_INSTRUCT_REPO = "unsloth/Ministral-3-14B-Instruct-2512-GGUF"
+DEFAULT_INSTRUCT_FILENAME = "Ministral-3-14B-Instruct-2512-UD-Q4_K_XL.gguf"
+DEFAULT_INSTRUCT_SPEC = f"{DEFAULT_INSTRUCT_REPO}/{DEFAULT_INSTRUCT_FILENAME}"
+NO_CACHED_MODEL = "No cached GGUF models"
 
 _ADDRESS_RE = re.compile(
     r"(@|https?://|www\.|\.(com|org|net)\b|"
@@ -83,26 +91,30 @@ class LlamaCppInstruct:
         n_ctx: int = 32000,
         n_gpu_layers: int = -1,
         temperature: float = 0.0,
+        local_files_only: bool = False,
     ):
+        self.repo_id = repo_id
+        self.filename = filename
         self.temperature = temperature
-        print(f"[1/3] Loading GGUF model {repo_id}/{filename}...", flush=True)
+        print(f"Loading GGUF model {repo_id}/{filename}...", flush=True)
+        load_kwargs = {
+            "repo_id": repo_id,
+            "filename": filename,
+            "n_ctx": n_ctx,
+            "verbose": True,
+            "local_files_only": local_files_only,
+        }
         try:
             self.llm = Llama.from_pretrained(
-                repo_id=repo_id,
-                filename=filename,
                 n_gpu_layers=n_gpu_layers,
-                n_ctx=n_ctx,
                 flash_attn=True,
-                verbose=True,
+                **load_kwargs,
             )
         except Exception as exc:
             print(f"⚠️ GPU load failed ({exc}), retrying on CPU...", flush=True)
             self.llm = Llama.from_pretrained(
-                repo_id=repo_id,
-                filename=filename,
                 n_gpu_layers=0,
-                n_ctx=n_ctx,
-                verbose=True,
+                **load_kwargs,
             )
         # Quiet inference logs after successful startup
         self.llm.verbose = False
@@ -114,6 +126,70 @@ class LlamaCppInstruct:
             temperature=self.temperature,
         )
         return output["choices"][0]["message"]["content"] or ""
+
+
+def parse_instruct_spec(raw: str) -> Tuple[str, str]:
+    text = (raw or "").strip().split("?")[0].strip()
+    if not text:
+        raise ValueError(
+            "Paste a Hugging Face GGUF path: owner/repo/file.gguf"
+        )
+    lowered = text.casefold()
+    for prefix in (
+        "https://huggingface.co/",
+        "http://huggingface.co/",
+        "https://hf.co/",
+        "http://hf.co/",
+        "huggingface.co/",
+        "hf.co/",
+    ):
+        if lowered.startswith(prefix):
+            text = text[len(prefix) :]
+            break
+    text = text.replace("/blob/main/", "/").replace("/resolve/main/", "/")
+    if ":" in text and text.casefold().endswith(".gguf"):
+        repo_id, filename = text.split(":", 1)
+        repo_id, filename = repo_id.strip(), filename.strip()
+        if repo_id and filename:
+            return repo_id, filename
+    if not text.casefold().endswith(".gguf"):
+        raise ValueError("Path must end with a .gguf filename.")
+    parts = [part for part in text.split("/") if part]
+    if len(parts) < 3:
+        raise ValueError("Path must look like owner/repo/file.gguf")
+    return "/".join(parts[:-1]), parts[-1]
+
+
+def list_cached_gguf_specs() -> List[str]:
+    try:
+        from huggingface_hub import scan_cache_dir
+
+        cache = scan_cache_dir()
+    except Exception as exc:
+        print(f"Could not scan Hugging Face cache: {exc}", flush=True)
+        return []
+    specs: List[str] = []
+    for repo in cache.repos:
+        if getattr(repo, "repo_type", "model") != "model":
+            continue
+        repo_id = repo.repo_id
+        for revision in repo.revisions:
+            for file_info in revision.files:
+                name = str(getattr(file_info, "file_name", "") or "")
+                if not name.casefold().endswith(".gguf"):
+                    continue
+                if "mmproj" in name.casefold():
+                    continue
+                specs.append(f"{repo_id}/{name}")
+    return sorted(dict.fromkeys(specs))
+
+
+def cached_models_dropdown(selected: Optional[str] = None):
+    specs = list_cached_gguf_specs()
+    if not specs:
+        return gr.update(choices=[NO_CACHED_MODEL], value=NO_CACHED_MODEL)
+    value = selected if selected in specs else specs[0]
+    return gr.update(choices=specs, value=value)
 
 
 class PaddlePageOcr:
@@ -375,7 +451,7 @@ def parse_llm_answer_rating(reply: str) -> Tuple[Optional[int], str]:
 class HeaderMetadata:
     """Classifies pages using header heuristics and the instruct LLM."""
 
-    def __init__(self, instruct: LlamaCppInstruct):
+    def __init__(self, instruct: Optional[LlamaCppInstruct] = None):
         self.instruct = instruct
 
     def classify_page(
@@ -391,6 +467,8 @@ class HeaderMetadata:
         return found
 
     def _label_with_model(self, text: str, page_num: int, total_pages: int) -> str:
+        if self.instruct is None:
+            return ""
         body = _without_docusign(text).strip()
         if not body:
             return ""
@@ -611,6 +689,85 @@ def chunk_document_with_metadata(
     return chunks
 
 
+def _safe_zip_name(name: str) -> str:
+    cleaned = (name or "").replace("\\", "/")
+    if not cleaned or cleaned.startswith("/") or any(part == ".." for part in cleaned.split("/")):
+        raise ValueError(f"Unsafe zip member: {name}")
+    return cleaned
+
+
+def _chunk_from_dict(row: dict) -> ChunkMetadata:
+    if not isinstance(row, dict):
+        raise ValueError("Each chunk must be an object.")
+    return ChunkMetadata(
+        chunk_id=str(row.get("chunk_id") or ""),
+        doc_id=str(row.get("doc_id") or ""),
+        doc_type=str(row.get("doc_type") or UNPARSED_LABEL),
+        chunk_index=int(row.get("chunk_index") or 0),
+        page_start=int(row.get("page_start") or 0),
+        page_end=int(row.get("page_end") or 0),
+        text=str(row.get("text") or ""),
+        fields=dict(row.get("fields") or {}),
+    )
+
+
+def _logical_docs_from_chunks(chunks: List[ChunkMetadata]) -> List[LogicalDocument]:
+    grouped: Dict[str, List[ChunkMetadata]] = {}
+    for chunk in chunks:
+        grouped.setdefault(chunk.doc_id or "doc", []).append(chunk)
+    docs: List[LogicalDocument] = []
+    for doc_id, doc_chunks in grouped.items():
+        doc_chunks = sorted(doc_chunks, key=lambda item: (item.page_start, item.chunk_index))
+        first = doc_chunks[0]
+        docs.append(
+            LogicalDocument(
+                doc_id=doc_id,
+                doc_type=first.doc_type or UNPARSED_LABEL,
+                page_start=min(item.page_start for item in doc_chunks),
+                page_end=max(item.page_end for item in doc_chunks),
+                text="\n\n".join(item.text for item in doc_chunks),
+                pages=[],
+                fields=dict(first.fields),
+                chunks=doc_chunks,
+            )
+        )
+    return docs
+
+
+def _pages_from_chunks(chunks: List[ChunkMetadata]) -> List[PageInfo]:
+    by_page: Dict[int, List[ChunkMetadata]] = {}
+    for chunk in chunks:
+        by_page.setdefault(chunk.page_start, []).append(chunk)
+    pages: List[PageInfo] = []
+    for page_num in sorted(by_page):
+        group = by_page[page_num]
+        fields: Dict[str, str] = {}
+        for chunk in group:
+            fields.update(chunk.fields)
+        pages.append(
+            PageInfo(
+                page_num=page_num,
+                text="\n\n".join(chunk.text for chunk in group),
+                doc_type=group[0].doc_type,
+                fields=fields,
+            )
+        )
+    return pages
+
+
+def documents_breakdown_md(store: "EnhancedDocumentStore") -> str:
+    lines = []
+    for i, doc in enumerate(store.logical_docs):
+        field_text = ""
+        if doc.fields:
+            shown = list(doc.fields.items())[:6]
+            field_text = " — " + "; ".join(f"{k}: {v}" for k, v in shown)
+        lines.append(
+            f"{i + 1}. **{doc.doc_type}** — Pages {doc.page_start + 1} to {doc.page_end + 1}{field_text}"
+        )
+    return "\n".join(lines) if lines else "No document text extracted."
+
+
 class IntelligentRetriever:
     def __init__(self, classifier: HeaderMetadata, embed_model: SentenceTransformer):
         self.classifier = classifier
@@ -698,7 +855,7 @@ class EnhancedDocumentStore:
         ocr: PaddlePageOcr,
         classifier: HeaderMetadata,
         embed_model: SentenceTransformer,
-        instruct: LlamaCppInstruct,
+        instruct: Optional[LlamaCppInstruct] = None,
     ):
         self.ocr = ocr
         self.classifier = classifier
@@ -741,6 +898,157 @@ class EnhancedDocumentStore:
         except Exception as exc:
             return False, {"error": str(exc)}
 
+    def export_vector_store_zip(self) -> str:
+        retriever = self.retriever
+        if not self.is_ready or retriever.index is None:
+            raise ValueError("Process a PDF first.")
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        zip_path = os.path.join(tempfile.gettempdir(), f"vector_store_{stamp}.zip")
+        with tempfile.TemporaryDirectory(prefix="rag_vector_") as work:
+            index_path = os.path.join(work, "index.faiss")
+            faiss.write_index(retriever.index, index_path)
+            chunks_path = os.path.join(work, "chunks.json")
+            with open(chunks_path, "w", encoding="utf-8") as f:
+                json.dump(
+                    [asdict(chunk) for chunk in retriever.chunks_metadata],
+                    f,
+                    indent=2,
+                    ensure_ascii=False,
+                )
+            type_dir = os.path.join(work, "doc_types")
+            os.makedirs(type_dir, exist_ok=True)
+            type_map: Dict[str, dict] = {}
+            for doc_type, data in retriever.doc_type_indices.items():
+                safe = re.sub(r"[^A-Za-z0-9._-]+", "_", doc_type).strip("._") or "type"
+                rel = f"doc_types/{safe[:80]}.faiss"
+                n = 2
+                while os.path.exists(os.path.join(work, rel)):
+                    rel = f"doc_types/{safe[:80]}_{n}.faiss"
+                    n += 1
+                faiss.write_index(data["index"], os.path.join(work, rel))
+                type_map[doc_type] = {
+                    "file": rel,
+                    "mapping": list(data["mapping"]),
+                }
+            manifest = {
+                "embed_model": EMBED_MODEL_NAME,
+                "index_metric": "inner_product",
+                "normalized_embeddings": True,
+                "ntotal": int(retriever.index.ntotal),
+                "dimension": int(retriever.index.d),
+                "chunk_count": len(retriever.chunks_metadata),
+                "processing_stats": self.processing_stats,
+                "doc_type_indices": type_map,
+                "instruct_model": {
+                    "repo_id": getattr(
+                        self.instruct, "repo_id", DEFAULT_INSTRUCT_REPO
+                    ),
+                    "filename": getattr(
+                        self.instruct, "filename", DEFAULT_INSTRUCT_FILENAME
+                    ),
+                },
+            }
+            manifest_path = os.path.join(work, "manifest.json")
+            with open(manifest_path, "w", encoding="utf-8") as f:
+                json.dump(manifest, f, indent=2, ensure_ascii=False)
+            with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                zf.write(index_path, "index.faiss")
+                zf.write(chunks_path, "chunks.json")
+                zf.write(manifest_path, "manifest.json")
+                for info in type_map.values():
+                    zf.write(os.path.join(work, info["file"]), info["file"])
+        return zip_path
+
+    def import_vector_store_zip(self, zip_file) -> dict:
+        zip_path = zip_file.name if hasattr(zip_file, "name") else str(zip_file)
+        if not zip_path or not os.path.exists(zip_path):
+            raise ValueError("Choose a vector store .zip file.")
+        with tempfile.TemporaryDirectory(prefix="rag_vector_in_") as work:
+            with zipfile.ZipFile(zip_path) as zf:
+                names = {_safe_zip_name(name) for name in zf.namelist()}
+                if "index.faiss" not in names or "chunks.json" not in names:
+                    raise ValueError("Zip is missing index.faiss or chunks.json.")
+
+                def extract(name: str) -> str:
+                    rel = _safe_zip_name(name)
+                    dest = os.path.join(work, rel)
+                    os.makedirs(os.path.dirname(dest) or work, exist_ok=True)
+                    with open(dest, "wb") as out:
+                        out.write(zf.read(rel))
+                    return dest
+
+                index = faiss.read_index(extract("index.faiss"))
+                chunks_raw = json.loads(zf.read("chunks.json").decode("utf-8"))
+                if not isinstance(chunks_raw, list) or not chunks_raw:
+                    raise ValueError("chunks.json is empty.")
+                chunks = [_chunk_from_dict(row) for row in chunks_raw]
+                if int(index.ntotal) != len(chunks):
+                    raise ValueError(
+                        f"Index has {index.ntotal} vectors but chunks.json has {len(chunks)}."
+                    )
+                probe = np.array(
+                    self.retriever.embed_model.encode(
+                        ["dimension check"], normalize_embeddings=True
+                    ),
+                    dtype="float32",
+                )
+                embed_dim = int(probe.shape[-1])
+                if int(index.d) != embed_dim:
+                    raise ValueError(
+                        f"Zip index dimension {index.d} does not match "
+                        f"{EMBED_MODEL_NAME} ({embed_dim})."
+                    )
+                manifest = {}
+                if "manifest.json" in names:
+                    manifest = json.loads(zf.read("manifest.json").decode("utf-8"))
+                    if not isinstance(manifest, dict):
+                        raise ValueError("manifest.json must be an object.")
+                type_indices: Dict[str, dict] = {}
+                for doc_type, info in (manifest.get("doc_type_indices") or {}).items():
+                    if not isinstance(info, dict):
+                        continue
+                    rel = info.get("file")
+                    mapping = [int(i) for i in (info.get("mapping") or [])]
+                    if not rel or _safe_zip_name(rel) not in names:
+                        continue
+                    type_index = faiss.read_index(extract(rel))
+                    if mapping and (
+                        min(mapping) < 0 or max(mapping) >= len(chunks)
+                    ):
+                        raise ValueError(f"Type index mapping for {doc_type} is out of range.")
+                    if int(type_index.ntotal) != len(mapping):
+                        raise ValueError(
+                            f"Type index {doc_type} has {type_index.ntotal} vectors "
+                            f"but mapping has {len(mapping)} entries."
+                        )
+                    type_indices[str(doc_type)] = {
+                        "index": type_index,
+                        "mapping": mapping,
+                    }
+
+            self.retriever.index = index
+            self.retriever.chunks_metadata = chunks
+            self.retriever.doc_type_indices = type_indices
+            self.chunks_metadata = chunks
+            self.logical_docs = _logical_docs_from_chunks(chunks)
+            self.pages_info = _pages_from_chunks(chunks)
+            stats = dict(manifest.get("processing_stats") or {})
+            stats["source"] = os.path.basename(zip_path)
+            stats["total_chunks"] = len(chunks)
+            stats["documents_found"] = len(self.logical_docs)
+            stats["total_pages"] = len(self.pages_info)
+            stats["document_types"] = list(
+                dict.fromkeys(chunk.doc_type for chunk in chunks)
+            )
+            zip_embed = str(manifest.get("embed_model") or "")
+            if zip_embed and zip_embed != EMBED_MODEL_NAME:
+                stats["embed_model_note"] = (
+                    f"Zip listed {zip_embed}; running {EMBED_MODEL_NAME}."
+                )
+            self.processing_stats = stats
+            self.is_ready = True
+            return stats
+
     @staticmethod
     def _is_answer_not_found(answer: str) -> bool:
         if not answer or not answer.strip() or answer.strip().lower().startswith("not_found"):
@@ -772,6 +1080,8 @@ class EnhancedDocumentStore:
             f"[Document: {chunk.doc_type} | Page {chunk.page_start + 1}]\n{chunk.text}"
             for chunk, _ in chunks_with_scores
         )
+        if self.instruct is None:
+            return "NOT_FOUND: Load an instruct GGUF model first."
         prompt = (
             "Based ONLY on the following text, answer the user's question accurately. "
             "Copy dates, lot numbers, and other identifiers exactly as they appear. "
@@ -783,6 +1093,8 @@ class EnhancedDocumentStore:
     def rate_answer_against_ground_truth(
         self, question: str, generated: str, ground_truth: str
     ) -> Dict:
+        if self.instruct is None:
+            return {"score": None, "reason": "Load an instruct GGUF model first."}
         if not (ground_truth or "").strip():
             return {"score": None, "reason": "No ground truth answer."}
         prompt = (
@@ -816,6 +1128,13 @@ class EnhancedDocumentStore:
         auto_route: bool = True,
         k: int = 4,
     ) -> Dict:
+        if self.instruct is None:
+            return {
+                "answer": "⚠️ Load an instruct GGUF model first.",
+                "sources": [],
+                "filter_used": "none",
+                "response_time": 0.0,
+            }
         if not self.is_ready:
             return {
                 "answer": "⚠️ Please upload a PDF file first.",
@@ -877,16 +1196,14 @@ class EnhancedDocumentStore:
 
 
 # Initialize models with progress output
-instruct_llm = LlamaCppInstruct(
-    repo_id="unsloth/Ministral-3-14B-Instruct-2512-GGUF",
-    filename="Ministral-3-14B-Instruct-2512-UD-Q4_K_XL.gguf",
-)
+instruct_llm = None
 ocr_llm = PaddlePageOcr()
 classifier = HeaderMetadata(instruct_llm)
 
-print("[2/3] Loading embedding model (BAAI/bge-small-en-v1.5)...", flush=True)
+print("[1/3] Instruct GGUF not loaded. Pick a cached model or download one.", flush=True)
+print(f"[2/3] Loading embedding model ({EMBED_MODEL_NAME})...", flush=True)
 
-embed_model = SentenceTransformer("BAAI/bge-small-en-v1.5")
+embed_model = SentenceTransformer(EMBED_MODEL_NAME)
 
 
 def new_store() -> EnhancedDocumentStore:
@@ -900,17 +1217,12 @@ def process_pdf_ui(file):
     global doc_store
     if file is None:
         doc_store = new_store()
-        return (
-            "Waiting for PDF...",
-            gr.update(choices=["All"], value="All"),
-            "No document processed yet.",
-        )
+        return "Waiting for PDF...", "No document processed yet."
     file_path = file.name if hasattr(file, "name") else str(file)
     success, stats = doc_store.process_pdf(file_path, filename=file_path)
     if not success:
         return (
             f"❌ Error: {stats.get('error', 'Unknown')}",
-            gr.update(choices=["All"], value="All"),
             "Error processing.",
         )
 
@@ -923,38 +1235,29 @@ def process_pdf_ui(file):
         f"✅ Processed {stats['total_pages']} pages into {stats['documents_found']} docs "
         f"({stats['processing_time']}).{failure_note}"
     )
-    lines = []
-    for i, doc in enumerate(doc_store.logical_docs):
-        field_text = ""
-        if doc.fields:
-            shown = list(doc.fields.items())[:6]
-            field_text = " — " + "; ".join(f"{k}: {v}" for k, v in shown)
-        lines.append(
-            f"{i + 1}. **{doc.doc_type}** — Pages {doc.page_start + 1} to {doc.page_end + 1}{field_text}"
-        )
-    breakdown_md = "\n".join(lines) if lines else "No document text extracted."
-    return (
-        status_text,
-        gr.update(choices=["All"] + stats["document_types"], value="All"),
-        breakdown_md,
-    )
+    return status_text, documents_breakdown_md(doc_store)
 
 
-def handle_chat(message, history, doc_filter, auto_route, top_k):
+def handle_chat(message, history):
     history = history or []
     if not message or not message.strip():
         return history, ""
+    if instruct_llm is None:
+        return history + [
+            {"role": "user", "content": message},
+            {"role": "assistant", "content": "⚠️ Load an instruct GGUF model first."},
+        ], ""
     if not doc_store.is_ready:
         return history + [
             {"role": "user", "content": message},
-            {"role": "assistant", "content": "⚠️ Please upload a PDF first."},
+            {"role": "assistant", "content": "⚠️ Upload a PDF or import a vector store first."},
         ], ""
 
     res = doc_store.query(
         message,
-        filter_type=None if doc_filter == "All" else doc_filter,
-        auto_route=auto_route,
-        k=int(top_k),
+        filter_type=None,
+        auto_route=True,
+        k=DEFAULT_TOP_K,
     )
     ans = res["answer"]
     meta_parts = []
@@ -987,10 +1290,81 @@ def export_chat_history(history) -> str:
     return out_path
 
 
+def export_vector_store_zip_ui() -> str:
+    try:
+        return doc_store.export_vector_store_zip()
+    except ValueError as exc:
+        raise gr.Error(str(exc)) from exc
+
+
+def import_vector_store_ui(file):
+    if file is None:
+        return gr.update(), gr.update()
+    try:
+        stats = doc_store.import_vector_store_zip(file)
+    except Exception as exc:
+        raise gr.Error(str(exc)) from exc
+    note = f" {stats['embed_model_note']}" if stats.get("embed_model_note") else ""
+    status_text = (
+        f"✅ Imported {stats.get('total_chunks', 0)} chunks from {stats.get('source', 'zip')} "
+        f"({stats.get('documents_found', 0)} docs).{note}"
+    )
+    return status_text, documents_breakdown_md(doc_store)
+
+
+def load_instruct_model_ui(spec: str, local_only: bool = False):
+    global instruct_llm
+    try:
+        repo_id, filename = parse_instruct_spec(spec)
+    except ValueError as exc:
+        raise gr.Error(str(exc)) from exc
+    current_spec = (
+        f"{instruct_llm.repo_id}/{instruct_llm.filename}"
+        if instruct_llm is not None
+        else ""
+    )
+    if current_spec == f"{repo_id}/{filename}":
+        return f"Already using {repo_id}/{filename}", cached_models_dropdown(
+            current_spec
+        )
+    old = instruct_llm
+    try:
+        if old is not None and hasattr(old, "llm"):
+            old.llm.close()
+    except Exception as exc:
+        print(f"Close old model failed: {exc}", flush=True)
+    instruct_llm = None
+    classifier.instruct = None
+    doc_store.instruct = None
+    gc.collect()
+    try:
+        new = LlamaCppInstruct(
+            repo_id=repo_id,
+            filename=filename,
+            local_files_only=local_only,
+        )
+    except Exception as exc:
+        raise gr.Error(f"Could not load {repo_id}/{filename}: {exc}") from exc
+    instruct_llm = new
+    classifier.instruct = new
+    doc_store.instruct = new
+    spec_used = f"{repo_id}/{filename}"
+    return f"Using {spec_used}", cached_models_dropdown(spec_used)
+
+
+def load_cached_model_ui(selected: str):
+    if not selected or selected == NO_CACHED_MODEL:
+        raise gr.Error("No cached GGUF selected.")
+    return load_instruct_model_ui(selected, local_only=True)
+
+
 print("[3/3] Starting Gradio interface...", flush=True)
 chatbot_kwargs = {"label": "Chat History", "height": "70vh"}
 if "type" in inspect.signature(gr.Chatbot.__init__).parameters:
     chatbot_kwargs["type"] = "messages"
+_startup_cached = list_cached_gguf_specs()
+_startup_choices = _startup_cached or [NO_CACHED_MODEL]
+_startup_selected = _startup_cached[0] if _startup_cached else NO_CACHED_MODEL
 
 with gr.Blocks(title="Pharmaceutical Document Q&A") as demo:
     gr.Markdown("### 📄 Pharmaceutical Document Q&A")
@@ -1006,11 +1380,34 @@ with gr.Blocks(title="Pharmaceutical Document Q&A") as demo:
             status_box = gr.Textbox(
                 label="Status", interactive=False, value="Waiting for PDF..."
             )
-            with gr.Accordion("⚙️ Options", open=False):
-                doc_filter = gr.Dropdown(choices=["All"], value="All", label="Filter")
-                auto_route = gr.Checkbox(value=True, label="Auto-Route")
-                top_k = gr.Dropdown(choices=[2, 4, 6, 8], value=4, label="Top K")
+            cached_models = gr.Dropdown(
+                label="Cached GGUF models",
+                choices=_startup_choices,
+                value=_startup_selected,
+                interactive=True,
+            )
+            load_cached_btn = gr.Button("Use selected model")
+            model_spec = gr.Textbox(
+                label="Download GGUF from Hugging Face",
+                value="",
+                placeholder=DEFAULT_INSTRUCT_SPEC,
+            )
+            load_model_btn = gr.Button("Download and use model")
+            model_status = gr.Textbox(
+                label="Loaded model",
+                interactive=False,
+                value="No instruct model loaded",
+            )
+            with gr.Accordion("📦 Vector Store", open=False):
                 detected_docs_md = gr.Markdown("No document processed yet.")
+                import_zip_input = gr.File(
+                    label="Import vector store (.zip)",
+                    file_types=[".zip"],
+                )
+                download_index_btn = gr.Button("Download vector store (.zip)")
+                vector_zip_output = gr.File(
+                    label="Vector store zip", interactive=False
+                )
             with gr.Accordion("📥 Export", open=False):
                 download_dict_btn = gr.Button("📥 Download JSON")
                 download_chat_btn = gr.Button("💬 Download Chat")
@@ -1019,17 +1416,41 @@ with gr.Blocks(title="Pharmaceutical Document Q&A") as demo:
     pdf_input.change(
         fn=process_pdf_ui,
         inputs=pdf_input,
-        outputs=[status_box, doc_filter, detected_docs_md],
+        outputs=[status_box, detected_docs_md],
     )
     send_btn.click(
         fn=handle_chat,
-        inputs=[user_query, chatbot, doc_filter, auto_route, top_k],
+        inputs=[user_query, chatbot],
         outputs=[chatbot, user_query],
     )
     user_query.submit(
         fn=handle_chat,
-        inputs=[user_query, chatbot, doc_filter, auto_route, top_k],
+        inputs=[user_query, chatbot],
         outputs=[chatbot, user_query],
+    )
+    load_cached_btn.click(
+        fn=load_cached_model_ui,
+        inputs=cached_models,
+        outputs=[model_status, cached_models],
+    )
+    load_model_btn.click(
+        fn=load_instruct_model_ui,
+        inputs=model_spec,
+        outputs=[model_status, cached_models],
+    )
+    model_spec.submit(
+        fn=load_instruct_model_ui,
+        inputs=model_spec,
+        outputs=[model_status, cached_models],
+    )
+    download_index_btn.click(
+        fn=export_vector_store_zip_ui,
+        outputs=vector_zip_output,
+    )
+    import_zip_input.change(
+        fn=import_vector_store_ui,
+        inputs=import_zip_input,
+        outputs=[status_box, detected_docs_md],
     )
     clear_btn.click(lambda: [], outputs=chatbot)
     download_dict_btn.click(fn=export_results_json, outputs=download_file_output)
@@ -1051,8 +1472,10 @@ with gr.Blocks(title="Pharmaceutical Document Q&A") as demo:
     # Place the table output full-width below the main Row (still inside `with gr.Blocks(...) as demo:`)
     eval_output_md = gr.Markdown(label="Evaluation Scorecard")
     eval_btn.click(
-        fn=lambda gt_f, k: __import__("eval_rag_pipeline").run_eval_with_csv(gt_f, top_k=k),
-        inputs=[gt_file_input, top_k],
+        fn=lambda gt_f: __import__("eval_rag_pipeline").run_eval_with_csv(
+            gt_f, top_k=DEFAULT_TOP_K
+        ),
+        inputs=[gt_file_input],
         outputs=[eval_output_md, eval_csv_output],
     )
 
@@ -1061,4 +1484,10 @@ with gr.Blocks(title="Pharmaceutical Document Q&A") as demo:
 if __name__ == "__main__":
     demo.launch(inbrowser=True)
     # ✅ Add this atexit hook to release Metal GPU buffers cleanly on Ctrl+C
-    atexit.register(lambda: instruct_llm.llm.close() if hasattr(instruct_llm, "llm") else None)
+    atexit.register(
+        lambda: (
+            instruct_llm.llm.close()
+            if instruct_llm is not None and hasattr(instruct_llm, "llm")
+            else None
+        )
+    )
