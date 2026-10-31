@@ -126,6 +126,7 @@ def evaluate_gradio_rag(gt: Dict[str, Any], top_k: int = 2) -> Dict[str, Any]:
     recalls = []
     reciprocal_ranks = []
     rouge_scores = []
+    llm_scores = []
     latencies = []
     failures = 0
     query_reports = []
@@ -187,8 +188,17 @@ def evaluate_gradio_rag(gt: Dict[str, Any], top_k: int = 2) -> Dict[str, Any]:
                 num_err_pct = round(rel_err * 100, 2)
 
             # Metric 4 (Readability - ROUGE-1 F1)
-            rouge_f1 = compute_rouge1_f1(case["reference_answer"], answer)
+            reference_answer = case.get("reference_answer", "")
+            rouge_f1 = compute_rouge1_f1(reference_answer, answer)
             rouge_scores.append(rouge_f1)
+
+            rating = store.rate_answer_against_ground_truth(
+                question, answer, reference_answer
+            )
+            llm_score = rating.get("score")
+            llm_reason = str(rating.get("reason") or "")
+            if llm_score is not None:
+                llm_scores.append(llm_score)
 
             query_reports.append(
                 {
@@ -201,8 +211,12 @@ def evaluate_gradio_rag(gt: Dict[str, Any], top_k: int = 2) -> Dict[str, Any]:
                     "field_match": field_hit,
                     "numeric_rel_error_pct": num_err_pct,
                     "rouge1_f1_pct": rouge_f1,
+                    "question": question,
+                    "llm_score": llm_score,
+                    "llm_reason": llm_reason,
                     "latency_sec": round(elapsed, 3),
                     "answer": answer,
+                    "reference_answer": reference_answer,
                 }
             )
 
@@ -210,7 +224,7 @@ def evaluate_gradio_rag(gt: Dict[str, Any], top_k: int = 2) -> Dict[str, Any]:
             elapsed = time.perf_counter() - t0
             latencies.append(elapsed)
             failures += 1
-            query_reports.append({"id": qid, "error": str(exc)})
+            query_reports.append({"id": qid, "question": question, "error": str(exc)})
 
     total_queries = len(gt.get("rag_test_cases", []))
     qa_field_acc_pct = (
@@ -246,6 +260,9 @@ def evaluate_gradio_rag(gt: Dict[str, Any], top_k: int = 2) -> Dict[str, Any]:
             "6_robustness_error_rate_pct": (
                 round((failures / total_queries) * 100, 2) if total_queries else 0.0
             ),
+            "7_llm_answer_rating_avg": (
+                round(sum(llm_scores) / len(llm_scores), 2) if llm_scores else None
+            ),
         },
         "header_extraction_breakdown": header_details,
         "query_breakdown": query_reports,
@@ -265,6 +282,7 @@ def format_report_as_markdown(report: Dict[str, Any], top_k: int = 2) -> str:
     top_k_int = int(top_k)
     sm = report["summary_metrics"]
     recall_key = f"3a_retrieval_recall@{top_k_int}_pct"
+    llm_avg = sm.get("7_llm_answer_rating_avg")
 
     # Table 1: Summary Metrics Scorecard
     md = [
@@ -279,6 +297,7 @@ def format_report_as_markdown(report: Dict[str, Any], top_k: int = 2) -> str:
         f"| **4. Readability (ROUGE-1 F1)** | `{sm['4_readability_rouge1_f1_pct']}%` |",
         f"| **5. Avg Latency** | `{sm['5_avg_latency_seconds']}s` |",
         f"| **6. Robustness (Error Rate)** | `{sm['6_robustness_error_rate_pct']}%` |",
+        f"| **7. LLM Answer Rating (avg / 5)** | `{llm_avg if llm_avg is not None else 'N/A'}` |",
         "",
         "### 📑 2. Header Field Extraction",
         "| Page | Field | Ground Truth | Extracted | Match |",
@@ -300,8 +319,8 @@ def format_report_as_markdown(report: Dict[str, Any], top_k: int = 2) -> str:
         [
             "",
             "### 🔍 3. Per-Query RAG Breakdown",
-            "| ID | Routed To | Retr. Pages | Target Pages | Recall@K | MRR | Field Match | Num Err % | ROUGE-1 | Latency | Answer |",
-            "| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :--- |",
+            "| ID | Routed To | Retr. Pages | Target Pages | Recall@K | MRR | Field Match | Num Err % | ROUGE-1 | LLM /5 | Latency | Answer | LLM Reason |",
+            "| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :--- | :--- |",
         ]
     )
 
@@ -309,7 +328,7 @@ def format_report_as_markdown(report: Dict[str, Any], top_k: int = 2) -> str:
         if "error" in q:
             err_msg = str(q["error"]).replace("|", "\\|")
             md.append(
-                f"| **{q['id']}** | ERROR | — | — | — | — | ❌ | — | — | — | `{err_msg}` |"
+                f"| **{q['id']}** | ERROR | — | — | — | — | ❌ | — | — | — | — | `{err_msg}` | — |"
             )
             continue
 
@@ -320,10 +339,39 @@ def format_report_as_markdown(report: Dict[str, Any], top_k: int = 2) -> str:
             else "N/A"
         )
         ans_clean = " ".join(str(q.get("answer", "")).split()).replace("|", "\\|")
+        llm_score = q.get("llm_score")
+        llm_disp = str(llm_score) if llm_score is not None else "N/A"
+        reason_clean = " ".join(str(q.get("llm_reason", "")).split()).replace("|", "\\|")
         md.append(
             f"| **{q['id']}** | {q['routed_to']} | `{q['retrieved_pages']}` | `{q['relevant_pages']}` | "
             f"{q['recall@k']}% | {q['rr']} | {f_icon} | {num_err} | "
-            f"{q['rouge1_f1_pct']}% | {q['latency_sec']}s | {ans_clean} |"
+            f"{q['rouge1_f1_pct']}% | {llm_disp} | {q['latency_sec']}s | {ans_clean} | {reason_clean} |"
+        )
+
+    md.extend(
+        [
+            "",
+            "### ❓ 4. Questions",
+            "| ID | Question | Ground Truth | Generated Answer | LLM /5 | LLM Reason |",
+            "| :--- | :--- | :--- | :--- | :---: | :--- |",
+        ]
+    )
+    for q in report.get("query_breakdown", []):
+        qid = q.get("id", "")
+        question = " ".join(str(q.get("question", "")).split()).replace("|", "\\|")
+        if "error" in q:
+            err_msg = str(q["error"]).replace("|", "\\|")
+            md.append(
+                f"| **{qid}** | {question or '—'} | — | `{err_msg}` | — | — |"
+            )
+            continue
+        gt_ans = " ".join(str(q.get("reference_answer", "")).split()).replace("|", "\\|")
+        gen_ans = " ".join(str(q.get("answer", "")).split()).replace("|", "\\|")
+        llm_score = q.get("llm_score")
+        llm_disp = str(llm_score) if llm_score is not None else "N/A"
+        reason = " ".join(str(q.get("llm_reason", "")).split()).replace("|", "\\|")
+        md.append(
+            f"| **{qid}** | {question} | {gt_ans} | {gen_ans} | {llm_disp} | {reason} |"
         )
 
     return "\n".join(md)
@@ -378,6 +426,13 @@ def save_report_to_csv(report: Dict[str, Any], top_k: int = 2) -> str:
                 sm.get("6_robustness_error_rate_pct", 0.0),
             ]
         )
+        llm_avg = sm.get("7_llm_answer_rating_avg")
+        writer.writerow(
+            [
+                "7. LLM Answer Rating (avg / 5)",
+                llm_avg if llm_avg is not None else "N/A",
+            ]
+        )
         writer.writerow([])
 
         # Section 2: Header Field Extraction
@@ -401,6 +456,7 @@ def save_report_to_csv(report: Dict[str, Any], top_k: int = 2) -> str:
         writer.writerow(
             [
                 "Query ID",
+                "Question",
                 "Routed To",
                 "Retrieved Pages",
                 "Target Pages",
@@ -409,8 +465,11 @@ def save_report_to_csv(report: Dict[str, Any], top_k: int = 2) -> str:
                 "Field Match",
                 "Numeric Rel Error (%)",
                 "ROUGE-1 F1 (%)",
+                "LLM Rating (/5)",
+                "LLM Reason",
                 "Latency (s)",
                 "Generated Answer",
+                "Ground Truth Answer",
             ]
         )
         for q in report.get("query_breakdown", []):
@@ -418,6 +477,7 @@ def save_report_to_csv(report: Dict[str, Any], top_k: int = 2) -> str:
                 writer.writerow(
                     [
                         q.get("id"),
+                        q.get("question", ""),
                         "ERROR",
                         "",
                         "",
@@ -427,13 +487,17 @@ def save_report_to_csv(report: Dict[str, Any], top_k: int = 2) -> str:
                         "",
                         "",
                         "",
+                        "",
+                        "",
                         q.get("error"),
+                        "",
                     ]
                 )
                 continue
             writer.writerow(
                 [
                     q.get("id", ""),
+                    " ".join(str(q.get("question", "")).split()),
                     q.get("routed_to", ""),
                     q.get("retrieved_pages", []),
                     q.get("relevant_pages", []),
@@ -446,8 +510,55 @@ def save_report_to_csv(report: Dict[str, Any], top_k: int = 2) -> str:
                         else "N/A"
                     ),
                     q.get("rouge1_f1_pct", 0.0),
+                    (
+                        q.get("llm_score")
+                        if q.get("llm_score") is not None
+                        else "N/A"
+                    ),
+                    q.get("llm_reason", ""),
                     q.get("latency_sec", 0.0),
                     " ".join(str(q.get("answer", "")).split()),
+                    " ".join(str(q.get("reference_answer", "")).split()),
+                ]
+            )
+
+        writer.writerow([])
+        writer.writerow(["=== 4. QUESTIONS ==="])
+        writer.writerow(
+            [
+                "Query ID",
+                "Question",
+                "Ground Truth Answer",
+                "Generated Answer",
+                "LLM Rating (/5)",
+                "LLM Reason",
+            ]
+        )
+        for q in report.get("query_breakdown", []):
+            if "error" in q:
+                writer.writerow(
+                    [
+                        q.get("id"),
+                        q.get("question", ""),
+                        "",
+                        q.get("error"),
+                        "",
+                        "",
+                    ]
+                )
+                continue
+            writer.writerow(
+                [
+                    q.get("id", ""),
+                    " ".join(str(q.get("question", "")).split()),
+                    " ".join(str(q.get("reference_answer", "")).split()),
+                    " ".join(str(q.get("answer", "")).split()),
+                    (
+                        q.get("llm_score")
+                        if q.get("llm_score") is not None
+                        else "N/A"
+                    ),
+                    q.get("llm_reason", ""),
                 ]
             )
 

@@ -263,7 +263,7 @@ def _normalize_type(title: str) -> str:
     title = re.sub(r"\(continued\)", "", title, flags=re.I)
     title = re.sub(r"\bNo\.\s*\S+", "", title, flags=re.I)
     title = re.sub(r",?\s*Page\s+\d+\s+of\s+\d+", "", title, flags=re.I)
-    return " ".join(title.split())
+    return " ".join(title.split()[:15])
 
 
 def _keep_field(key: str, value: str) -> bool:
@@ -333,7 +333,7 @@ def parse_header_metadata(text: str) -> PageClassification:
         ):
             parts.append(nxt)
         raw = " ".join(parts)
-        title = _normalize_type(raw)[:120]
+        title = _normalize_type(raw)
         break
     return PageClassification(
         doc_type=title or UNPARSED_LABEL,
@@ -351,6 +351,25 @@ def _clean_label(reply: str) -> str:
         if line.casefold().startswith(prefix):
             line = line[len(prefix) :].strip()
     return " ".join(line.split())[:120]
+
+
+def parse_llm_answer_rating(reply: str) -> Tuple[Optional[int], str]:
+    text = (reply or "").strip()
+    if not text:
+        return None, ""
+    reason_match = re.search(r"REASON\s*:\s*(.+)", text, re.I | re.S)
+    reason = (
+        " ".join(reason_match.group(1).split())
+        if reason_match
+        else " ".join(text.split())
+    )
+    score_match = re.search(r"SCORE\s*:\s*([0-5](?:\.\d+)?)\b", text, re.I)
+    if not score_match:
+        score_match = re.search(r"\b([0-5](?:\.\d+)?)\s*/\s*5\b", text)
+    if not score_match:
+        return None, reason
+    score = int(round(float(score_match.group(1))))
+    return max(0, min(5, score)), reason
 
 
 class HeaderMetadata:
@@ -761,6 +780,35 @@ class EnhancedDocumentStore:
         )
         return self.instruct.complete(prompt, max_tokens=512).strip()
 
+    def rate_answer_against_ground_truth(
+        self, question: str, generated: str, ground_truth: str
+    ) -> Dict:
+        if not (ground_truth or "").strip():
+            return {"score": None, "reason": "No ground truth answer."}
+        prompt = (
+            "Compare the generated answer to the ground truth. Ignore style and length.\n"
+            "Score 0 to 5:\n"
+            "5 = all key facts match\n"
+            "4 = facts match with only minor extra wording\n"
+            "3 = mostly correct but missing a key fact\n"
+            "2 = mixed correct and incorrect facts\n"
+            "1 = mostly wrong\n"
+            "0 = empty or contradicts the ground truth\n"
+            "Pay special attention to numbers, dates, lot numbers, and units.\n"
+            "Return exactly:\n"
+            "SCORE: <integer 0-5>\n"
+            "REASON: <one sentence>\n\n"
+            f"Question: {question}\n"
+            f"Ground truth: {ground_truth}\n"
+            f"Generated: {generated}"
+        )
+        try:
+            reply = self.instruct.complete(prompt, max_tokens=256).strip()
+        except Exception as exc:
+            return {"score": None, "reason": f"Rating error: {exc}"}
+        score, reason = parse_llm_answer_rating(reply)
+        return {"score": score, "reason": reason or "No reason returned."}
+
     def query(
         self,
         question: str,
@@ -995,7 +1043,7 @@ with gr.Blocks(title="Pharmaceutical Document Q&A") as demo:
             label="📋 Ground Truth JSON (optional, defaults to ground_truth.json)",
             file_types=[".json"],
         )
-        eval_btn = gr.Button("▶️ Run 6-Metric Evaluation Suite", variant="primary")
+        eval_btn = gr.Button("▶️ Run Evaluation Suite", variant="primary")
         eval_csv_output = gr.File(
                     label="📥 Download Evaluation Report (.csv)", interactive=False
                 )
