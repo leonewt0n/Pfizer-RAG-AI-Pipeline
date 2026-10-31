@@ -319,16 +319,15 @@ def format_report_as_markdown(report: Dict[str, Any], top_k: int = 2) -> str:
         [
             "",
             "### 🔍 3. Per-Query RAG Breakdown",
-            "| ID | Routed To | Retr. Pages | Target Pages | Recall@K | MRR | Field Match | Num Err % | ROUGE-1 | LLM /5 | Latency | Answer | LLM Reason |",
-            "| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :--- | :--- |",
+            "| ID | Routed To | Retr. Pages | Target Pages | Recall@K | MRR | Field Match | Num Err % | ROUGE-1 | LLM /5 | Latency |",
+            "| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |",
         ]
     )
 
     for q in report.get("query_breakdown", []):
         if "error" in q:
-            err_msg = str(q["error"]).replace("|", "\\|")
             md.append(
-                f"| **{q['id']}** | ERROR | — | — | — | — | ❌ | — | — | — | — | `{err_msg}` | — |"
+                f"| **{q['id']}** | ERROR | — | — | — | — | ❌ | — | — | — | — |"
             )
             continue
 
@@ -338,14 +337,12 @@ def format_report_as_markdown(report: Dict[str, Any], top_k: int = 2) -> str:
             if q["numeric_rel_error_pct"] is not None
             else "N/A"
         )
-        ans_clean = " ".join(str(q.get("answer", "")).split()).replace("|", "\\|")
         llm_score = q.get("llm_score")
         llm_disp = str(llm_score) if llm_score is not None else "N/A"
-        reason_clean = " ".join(str(q.get("llm_reason", "")).split()).replace("|", "\\|")
         md.append(
             f"| **{q['id']}** | {q['routed_to']} | `{q['retrieved_pages']}` | `{q['relevant_pages']}` | "
             f"{q['recall@k']}% | {q['rr']} | {f_icon} | {num_err} | "
-            f"{q['rouge1_f1_pct']}% | {llm_disp} | {q['latency_sec']}s | {ans_clean} | {reason_clean} |"
+            f"{q['rouge1_f1_pct']}% | {llm_disp} | {q['latency_sec']}s |"
         )
 
     md.extend(
