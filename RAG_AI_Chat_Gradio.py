@@ -14,10 +14,9 @@
 # ///
 from __future__ import annotations
 
+import atexit
 import os
 import sys
-import atexit
-
 
 # Prevent macOS OpenMP / fork crashes between faiss, torch, and llama.cpp
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
@@ -31,8 +30,10 @@ import re
 import tempfile
 import time
 import zipfile
+from collections import defaultdict
 from dataclasses import asdict, dataclass, field
-from typing import Dict, List, Optional, Tuple
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 
 print("[Startup] Importing libraries...", flush=True)
 import faiss
@@ -51,6 +52,10 @@ DEFAULT_INSTRUCT_REPO = "unsloth/Ministral-3-14B-Instruct-2512-GGUF"
 DEFAULT_INSTRUCT_FILENAME = "Ministral-3-14B-Instruct-2512-UD-Q4_K_XL.gguf"
 DEFAULT_INSTRUCT_SPEC = f"{DEFAULT_INSTRUCT_REPO}/{DEFAULT_INSTRUCT_FILENAME}"
 NO_CACHED_MODEL = "No cached GGUF models"
+
+_HF_URL_PREFIX_RE = re.compile(r"^(?:https?://)?(?:huggingface\.co|hf\.co)/", re.I)
+_LABEL_PREFIX_RE = re.compile(r"^(?:label|document|page)\s*:\s*", re.I)
+_NOT_FOUND_PREFIX_RE = re.compile(r"^NOT_FOUND(?:\s*:\s*|\s*[-\s]*)", re.I)
 
 _ADDRESS_RE = re.compile(
     r"(@|https?://|www\.|\.(com|org|net)\b|"
@@ -71,6 +76,24 @@ _ROUTE_STOP = {
     "the", "and", "for", "with", "from", "that", "this",
     "what", "when", "where", "which", "page", "date", "does", "have",
 }
+_NOT_FOUND_PHRASES = (
+    "not mentioned",
+    "not provided",
+    "does not contain",
+    "no information",
+    "cannot find",
+    "unable to find",
+)
+
+
+def _resolve_file_path(file_obj: Any) -> str:
+    return file_obj.name if hasattr(file_obj, "name") else str(file_obj)
+
+
+def _write_json(path: str, payload: Any) -> str:
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, ensure_ascii=False)
+    return path
 
 
 class OcrError(RuntimeError):
@@ -112,11 +135,7 @@ class LlamaCppInstruct:
             )
         except Exception as exc:
             print(f"⚠️ GPU load failed ({exc}), retrying on CPU...", flush=True)
-            self.llm = Llama.from_pretrained(
-                n_gpu_layers=0,
-                **load_kwargs,
-            )
-        # Quiet inference logs after successful startup
+            self.llm = Llama.from_pretrained(n_gpu_layers=0, **load_kwargs)
         self.llm.verbose = False
 
     def complete(self, prompt: str, max_tokens: int = 512) -> str:
@@ -129,31 +148,21 @@ class LlamaCppInstruct:
 
 
 def parse_instruct_spec(raw: str) -> Tuple[str, str]:
-    text = (raw or "").strip().split("?")[0].strip()
+    text = (raw or "").strip().split("?", 1)[0].strip()
     if not text:
-        raise ValueError(
-            "Paste a Hugging Face GGUF path: owner/repo/file.gguf"
-        )
-    lowered = text.casefold()
-    for prefix in (
-        "https://huggingface.co/",
-        "http://huggingface.co/",
-        "https://hf.co/",
-        "http://hf.co/",
-        "huggingface.co/",
-        "hf.co/",
-    ):
-        if lowered.startswith(prefix):
-            text = text[len(prefix) :]
-            break
+        raise ValueError("Paste a Hugging Face GGUF path: owner/repo/file.gguf")
+
+    text = _HF_URL_PREFIX_RE.sub("", text)
     text = text.replace("/blob/main/", "/").replace("/resolve/main/", "/")
-    if ":" in text and text.casefold().endswith(".gguf"):
-        repo_id, filename = text.split(":", 1)
-        repo_id, filename = repo_id.strip(), filename.strip()
-        if repo_id and filename:
-            return repo_id, filename
+
     if not text.casefold().endswith(".gguf"):
         raise ValueError("Path must end with a .gguf filename.")
+
+    if ":" in text:
+        repo_id, filename = (part.strip() for part in text.split(":", 1))
+        if repo_id and filename:
+            return repo_id, filename
+
     parts = [part for part in text.split("/") if part]
     if len(parts) < 3:
         raise ValueError("Path must look like owner/repo/file.gguf")
@@ -168,20 +177,17 @@ def list_cached_gguf_specs() -> List[str]:
     except Exception as exc:
         print(f"Could not scan Hugging Face cache: {exc}", flush=True)
         return []
-    specs: List[str] = []
-    for repo in cache.repos:
-        if getattr(repo, "repo_type", "model") != "model":
-            continue
-        repo_id = repo.repo_id
-        for revision in repo.revisions:
-            for file_info in revision.files:
-                name = str(getattr(file_info, "file_name", "") or "")
-                if not name.casefold().endswith(".gguf"):
-                    continue
-                if "mmproj" in name.casefold():
-                    continue
-                specs.append(f"{repo_id}/{name}")
-    return sorted(dict.fromkeys(specs))
+
+    specs = {
+        f"{repo.repo_id}/{file_info.file_name}"
+        for repo in cache.repos
+        if getattr(repo, "repo_type", "model") == "model"
+        for revision in repo.revisions
+        for file_info in revision.files
+        if str(getattr(file_info, "file_name", "")).casefold().endswith(".gguf")
+        and "mmproj" not in str(getattr(file_info, "file_name", "")).casefold()
+    }
+    return sorted(specs)
 
 
 def cached_models_dropdown(selected: Optional[str] = None):
@@ -206,6 +212,7 @@ class PaddlePageOcr:
             return self._engine
         try:
             from paddleocr import PaddleOCR
+
             try:
                 self._engine = PaddleOCR(lang="en")
             except TypeError:
@@ -219,10 +226,11 @@ class PaddlePageOcr:
     def transcribe(self, image_path: str) -> str:
         engine = self._ensure_loaded()
         try:
-            if hasattr(engine, "predict"):
-                raw = engine.predict(image_path)
-            else:
-                raw = engine.ocr(image_path, cls=True)
+            raw = (
+                engine.predict(image_path)
+                if hasattr(engine, "predict")
+                else engine.ocr(image_path, cls=True)
+            )
         except TypeError:
             raw = engine.ocr(image_path)
         except Exception as exc:
@@ -230,22 +238,24 @@ class PaddlePageOcr:
         return "\n".join(_paddle_lines(raw)).strip()
 
 
-def _paddle_lines(raw) -> List[str]:
-    lines: List[str] = []
+def _paddle_lines(raw: Any) -> List[str]:
     if not raw:
-        return lines
+        return []
+    lines: List[str] = []
     items = raw if isinstance(raw, list) else [raw]
     for item in items:
-        texts = getattr(item, "rec_texts", None)
-        if texts is None and isinstance(item, dict):
-            texts = item.get("rec_texts")
+        texts = (
+            item.get("rec_texts")
+            if isinstance(item, dict)
+            else getattr(item, "rec_texts", None)
+        )
         if texts:
             lines.extend(str(text) for text in texts if text)
             continue
         if not isinstance(item, list):
             continue
         for row in item:
-            if not row or not isinstance(row, (list, tuple)) or len(row) < 2:
+            if not isinstance(row, (list, tuple)) or len(row) < 2:
                 continue
             text_part = row[1]
             if isinstance(text_part, (list, tuple)) and text_part:
@@ -308,9 +318,7 @@ def _is_letterhead(line: str) -> bool:
         return True
     if _ADDRESS_RE.search(stripped) or _COMPANY_RE.search(stripped):
         return True
-    if stripped.endswith(":") and len(stripped) <= 24:
-        return True
-    return False
+    return stripped.endswith(":") and len(stripped) <= 24
 
 
 def _headingish(line: str) -> bool:
@@ -318,7 +326,7 @@ def _headingish(line: str) -> bool:
     if len(words) < 2:
         return False
     good = sum(
-        1 for w in words if w.isupper() or w[:1].isupper() or w.casefold() in _SMALL_WORDS
+        1 for w in words if w[0].isupper() or w.casefold() in _SMALL_WORDS
     )
     return good / len(words) >= 0.7
 
@@ -336,22 +344,18 @@ def _title_candidate(line: str) -> bool:
 
 
 def _normalize_type(title: str) -> str:
-    title = re.sub(r"\(continued\)", "", title, flags=re.I)
-    title = re.sub(r"\bNo\.\s*\S+", "", title, flags=re.I)
-    title = re.sub(r",?\s*Page\s+\d+\s+of\s+\d+", "", title, flags=re.I)
+    title = re.sub(r"\(continued\)|\bNo\.\s*\S+|,?\s*Page\s+\d+\s+of\s+\d+", "", title, flags=re.I)
     return " ".join(title.split()[:15])
 
 
 def _keep_field(key: str, value: str) -> bool:
-    if len(key) < 4 or len(key) > 40 or not value or len(value) > 160:
+    if not (4 <= len(key) <= 40 and 0 < len(value) <= 160):
         return False
     if key[0].isdigit() or not any(ch.isalpha() for ch in key):
         return False
     if "docusign" in key.casefold() or "docusign" in value.casefold():
         return False
-    if _is_letterhead(key) or _is_letterhead(value) or _ADDRESS_RE.search(value):
-        return False
-    return True
+    return not (_is_letterhead(key) or _is_letterhead(value) or _ADDRESS_RE.search(value))
 
 
 def _header_fields(lines: List[str]) -> Dict[str, str]:
@@ -363,9 +367,7 @@ def _header_fields(lines: List[str]) -> Dict[str, str]:
             key, value = (part.strip() for part in line.split(":", 1))
             if _keep_field(key, value):
                 fields.setdefault(key, value)
-            i += 1
-            continue
-        if line.endswith(":") and i + 1 < len(lines):
+        elif line.endswith(":") and i + 1 < len(lines):
             key = line[:-1].strip()
             value = lines[i + 1].strip()
             if value and not value.endswith(":") and _keep_field(key, value):
@@ -383,20 +385,17 @@ def _without_docusign(text: str) -> str:
 
 
 def parse_header_metadata(text: str) -> PageClassification:
-    text = _without_docusign(text)
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    cleaned = _without_docusign(text)
+    lines = [line.strip() for line in cleaned.splitlines() if line.strip()]
     header = lines[:18]
     title = ""
     raw = ""
-    index = 0
-    while index < len(header):
-        line = header[index]
+
+    for index, line in enumerate(header):
         if not _title_candidate(line):
-            index += 1
             continue
         nxt = header[index + 1] if index + 1 < len(header) else ""
         if nxt and (_ADDRESS_RE.search(nxt) or _COMPANY_RE.search(nxt)):
-            index += 1
             continue
         parts = [line]
         if (
@@ -411,6 +410,7 @@ def parse_header_metadata(text: str) -> PageClassification:
         raw = " ".join(parts)
         title = _normalize_type(raw)
         break
+
     return PageClassification(
         doc_type=title or UNPARSED_LABEL,
         continues_previous="continued" in raw.casefold(),
@@ -423,9 +423,7 @@ def _clean_label(reply: str) -> str:
     if not reply or not reply.strip():
         return ""
     line = reply.strip().splitlines()[0].strip().strip("\"'`")
-    for prefix in ("label:", "document:", "page:"):
-        if line.casefold().startswith(prefix):
-            line = line[len(prefix) :].strip()
+    line = _LABEL_PREFIX_RE.sub("", line).strip()
     return " ".join(line.split())[:120]
 
 
@@ -434,14 +432,11 @@ def parse_llm_answer_rating(reply: str) -> Tuple[Optional[int], str]:
     if not text:
         return None, ""
     reason_match = re.search(r"REASON\s*:\s*(.+)", text, re.I | re.S)
-    reason = (
-        " ".join(reason_match.group(1).split())
-        if reason_match
-        else " ".join(text.split())
+    reason = " ".join((reason_match.group(1) if reason_match else text).split())
+    score_match = (
+        re.search(r"SCORE\s*:\s*([0-5](?:\.\d+)?)\b", text, re.I)
+        or re.search(r"\b([0-5](?:\.\d+)?)\s*/\s*5\b", text)
     )
-    score_match = re.search(r"SCORE\s*:\s*([0-5](?:\.\d+)?)\b", text, re.I)
-    if not score_match:
-        score_match = re.search(r"\b([0-5](?:\.\d+)?)\s*/\s*5\b", text)
     if not score_match:
         return None, reason
     score = int(round(float(score_match.group(1))))
@@ -486,7 +481,7 @@ class HeaderMetadata:
             print(f"  Page {page_num + 1}: label error - {exc}", flush=True)
             return ""
         label = _clean_label(reply)
-        return "" if not label or "docusign" in label.casefold() else label
+        return "" if "docusign" in label.casefold() else label
 
     def route(self, query: str, doc_types: List[str]) -> Optional[str]:
         unique = list(dict.fromkeys(dt for dt in doc_types if dt))
@@ -494,6 +489,7 @@ class HeaderMetadata:
             return None
         if len(unique) == 1:
             return unique[0]
+
         query_words = {
             w for w in re.findall(r"[a-z0-9]{3,}", query.casefold()) if w not in _ROUTE_STOP
         }
@@ -503,53 +499,75 @@ class HeaderMetadata:
             score = len(query_words & type_words)
             if score > best_score:
                 best_type, best_score = doc_type, score
-        return best_type if best_score else None
+        return best_type
+
+
+def _extract_page_info(
+    page: pymupdf.Page, page_idx: int, ocr: PaddlePageOcr, render_dpi: int
+) -> PageInfo:
+    text = (page.get_text("text") or "").strip()
+    if len(text) >= MIN_EMBEDDED_CHARS:
+        print(f"  Page {page_idx + 1}: embedded text ({len(text)} chars).", flush=True)
+        return PageInfo(page_num=page_idx, text=text)
+
+    print(
+        f"  Page {page_idx + 1}: {len(text)} embedded chars, running PaddleOCR...",
+        flush=True,
+    )
+    tmp_png = os.path.join(tempfile.gettempdir(), f"ocr_page_{page_idx}_{os.getpid()}.png")
+    page.get_pixmap(dpi=render_dpi).save(tmp_png)
+    ocr_error = None
+    try:
+        text = ocr.transcribe(tmp_png).strip()
+        print(f"  Page {page_idx + 1}: PaddleOCR extracted {len(text)} chars.", flush=True)
+    except OcrModelUnavailable:
+        raise
+    except Exception as exc:
+        text = ""
+        ocr_error = str(exc)
+        print(f"  Page {page_idx + 1}: PaddleOCR failed - {exc}", flush=True)
+    finally:
+        try:
+            os.remove(tmp_png)
+        except OSError:
+            pass
+    return PageInfo(page_num=page_idx, text=text, ocr_error=ocr_error)
+
+
+def _build_logical_document(doc_index: int, pages: List[PageInfo]) -> LogicalDocument:
+    opening = pages[0]
+    merged_fields: Dict[str, str] = {}
+    for p in pages:
+        for k, v in p.fields.items():
+            merged_fields.setdefault(k, v)
+    body = "\n\n".join(
+        _format_page_text(p, p.text) for p in pages if p.text.strip() or p.fields
+    )
+    return LogicalDocument(
+        doc_id=f"doc_{doc_index}",
+        doc_type=opening.doc_type or UNPARSED_LABEL,
+        page_start=opening.page_num,
+        page_end=pages[-1].page_num,
+        text=body.strip(),
+        pages=list(pages),
+        fields=merged_fields,
+    )
 
 
 def extract_and_analyze_pdf(
-    pdf_file,
+    pdf_file: Any,
     ocr: PaddlePageOcr,
     classifier: HeaderMetadata,
     render_dpi: int = OCR_RENDER_DPI,
 ) -> Tuple[List[PageInfo], List[LogicalDocument]]:
     print("Starting PDF extraction and analysis...", flush=True)
-    file_path = pdf_file.name if hasattr(pdf_file, "name") else str(pdf_file)
-    pdf_doc = pymupdf.open(file_path)
-    try:
+    file_path = _resolve_file_path(pdf_file)
+    with pymupdf.open(file_path) as pdf_doc:
         total_pages = pdf_doc.page_count
-        pages_info: List[PageInfo] = []
-        for i, page in enumerate(pdf_doc):
-            text = (page.get_text("text") or "").strip()
-            ocr_error = None
-            if len(text) >= MIN_EMBEDDED_CHARS:
-                print(f"  Page {i + 1}: embedded text ({len(text)} chars).", flush=True)
-            else:
-                print(
-                    f"  Page {i + 1}: {len(text)} embedded chars, running PaddleOCR...",
-                    flush=True,
-                )
-                tmp_png = os.path.join(
-                    tempfile.gettempdir(), f"ocr_page_{i}_{os.getpid()}.png"
-                )
-                page.get_pixmap(dpi=render_dpi).save(tmp_png)
-                try:
-                    text = ocr.transcribe(tmp_png).strip()
-                    print(f"  Page {i + 1}: PaddleOCR extracted {len(text)} chars.", flush=True)
-                except OcrModelUnavailable:
-                    raise
-                except Exception as exc:
-                    text = ""
-                    ocr_error = str(exc)
-                    print(f"  Page {i + 1}: PaddleOCR failed - {exc}", flush=True)
-                finally:
-                    if os.path.exists(tmp_png):
-                        try:
-                            os.remove(tmp_png)
-                        except OSError:
-                            pass
-            pages_info.append(PageInfo(page_num=i, text=text, ocr_error=ocr_error))
-    finally:
-        pdf_doc.close()
+        pages_info = [
+            _extract_page_info(page, i, ocr, render_dpi)
+            for i, page in enumerate(pdf_doc)
+        ]
 
     if not pages_info:
         raise ValueError("No pages could be extracted from PDF.")
@@ -558,18 +576,19 @@ def extract_and_analyze_pdf(
         classified = classifier.classify_page(
             page_obj.text, page_num=i, total_pages=total_pages
         )
+        prev_type = pages_info[i - 1].doc_type if i > 0 else None
         continued = (
             i > 0
             and classified.continues_previous
-            and classified.doc_type == pages_info[i - 1].doc_type
+            and classified.doc_type == prev_type
             and classified.doc_type != UNPARSED_LABEL
         )
-        if i == 0 or not continued:
+        if continued:
+            page_obj.page_in_doc = pages_info[i - 1].page_in_doc + 1
+            page_obj.doc_type = prev_type
+        else:
             page_obj.page_in_doc = 0
             page_obj.doc_type = classified.doc_type
-        else:
-            page_obj.page_in_doc = pages_info[i - 1].page_in_doc + 1
-            page_obj.doc_type = pages_info[i - 1].doc_type
 
         if "docusign" in (page_obj.doc_type or "").casefold():
             page_obj.doc_type = UNPARSED_LABEL
@@ -587,38 +606,14 @@ def extract_and_analyze_pdf(
 
     logical_docs: List[LogicalDocument] = []
     current_pages: List[PageInfo] = []
-
-    def flush() -> None:
-        if not current_pages:
-            return
-        opening = current_pages[0]
-        merged_fields: Dict[str, str] = {}
-        for p in current_pages:
-            for k, v in p.fields.items():
-                merged_fields.setdefault(k, v)
-        body = "\n\n".join(
-            _format_page_text(p, p.text)
-            for p in current_pages
-            if p.text.strip() or p.fields
-        )
-        logical_docs.append(
-            LogicalDocument(
-                doc_id=f"doc_{len(logical_docs)}",
-                doc_type=opening.doc_type or UNPARSED_LABEL,
-                page_start=opening.page_num,
-                page_end=current_pages[-1].page_num,
-                text=body.strip(),
-                pages=list(current_pages),
-                fields=merged_fields,
-            )
-        )
-
     for page in pages_info:
         if page.page_in_doc == 0 and current_pages:
-            flush()
+            logical_docs.append(_build_logical_document(len(logical_docs), current_pages))
             current_pages = []
         current_pages.append(page)
-    flush()
+    if current_pages:
+        logical_docs.append(_build_logical_document(len(logical_docs), current_pages))
+
     return pages_info, logical_docs
 
 
@@ -660,38 +655,48 @@ def chunk_document_with_metadata(
         body = page.text.strip()
         if not body and not page.fields:
             continue
-        words = body.split()
-        if page.keep_page_intact or len(words) <= chunk_size:
+
+        if page.keep_page_intact or len(body.split()) <= chunk_size:
             _append_chunk(chunks, logical_doc, page, body)
             continue
 
-        lines = body.splitlines()
-        current_lines: List[str] = []
+        current_lines: List[Tuple[str, int]] = []
         current_words = 0
-        for line in lines:
-            line_word_count = len(line.split())
-            if current_words + line_word_count > chunk_size and current_lines:
-                _append_chunk(chunks, logical_doc, page, "\n".join(current_lines))
-                overlap_lines: List[str] = []
+        for line in body.splitlines():
+            word_count = len(line.split())
+            if current_words + word_count > chunk_size and current_lines:
+                _append_chunk(
+                    chunks,
+                    logical_doc,
+                    page,
+                    "\n".join(text for text, _ in current_lines),
+                )
+                overlap_pairs: List[Tuple[str, int]] = []
                 overlap_words = 0
-                for prev_line in reversed(current_lines):
-                    word_len = len(prev_line.split())
-                    if overlap_words + word_len > overlap:
+                for prev_line, prev_count in reversed(current_lines):
+                    if overlap_words + prev_count > overlap:
                         break
-                    overlap_lines.insert(0, prev_line)
-                    overlap_words += word_len
-                current_lines = overlap_lines
+                    overlap_pairs.append((prev_line, prev_count))
+                    overlap_words += prev_count
+                current_lines = list(reversed(overlap_pairs))
                 current_words = overlap_words
-            current_lines.append(line)
-            current_words += line_word_count
+
+            current_lines.append((line, word_count))
+            current_words += word_count
+
         if current_lines:
-            _append_chunk(chunks, logical_doc, page, "\n".join(current_lines))
+            _append_chunk(
+                chunks,
+                logical_doc,
+                page,
+                "\n".join(text for text, _ in current_lines),
+            )
     return chunks
 
 
 def _safe_zip_name(name: str) -> str:
     cleaned = (name or "").replace("\\", "/")
-    if not cleaned or cleaned.startswith("/") or any(part == ".." for part in cleaned.split("/")):
+    if not cleaned or cleaned.startswith("/") or ".." in cleaned.split("/"):
         raise ValueError(f"Unsafe zip member: {name}")
     return cleaned
 
@@ -712,12 +717,13 @@ def _chunk_from_dict(row: dict) -> ChunkMetadata:
 
 
 def _logical_docs_from_chunks(chunks: List[ChunkMetadata]) -> List[LogicalDocument]:
-    grouped: Dict[str, List[ChunkMetadata]] = {}
+    grouped: Dict[str, List[ChunkMetadata]] = defaultdict(list)
     for chunk in chunks:
-        grouped.setdefault(chunk.doc_id or "doc", []).append(chunk)
+        grouped[chunk.doc_id or "doc"].append(chunk)
+
     docs: List[LogicalDocument] = []
     for doc_id, doc_chunks in grouped.items():
-        doc_chunks = sorted(doc_chunks, key=lambda item: (item.page_start, item.chunk_index))
+        doc_chunks.sort(key=lambda item: (item.page_start, item.chunk_index))
         first = doc_chunks[0]
         docs.append(
             LogicalDocument(
@@ -735,9 +741,10 @@ def _logical_docs_from_chunks(chunks: List[ChunkMetadata]) -> List[LogicalDocume
 
 
 def _pages_from_chunks(chunks: List[ChunkMetadata]) -> List[PageInfo]:
-    by_page: Dict[int, List[ChunkMetadata]] = {}
+    by_page: Dict[int, List[ChunkMetadata]] = defaultdict(list)
     for chunk in chunks:
-        by_page.setdefault(chunk.page_start, []).append(chunk)
+        by_page[chunk.page_start].append(chunk)
+
     pages: List[PageInfo] = []
     for page_num in sorted(by_page):
         group = by_page[page_num]
@@ -756,16 +763,16 @@ def _pages_from_chunks(chunks: List[ChunkMetadata]) -> List[PageInfo]:
 
 
 def documents_breakdown_md(store: "EnhancedDocumentStore") -> str:
+    if not store.logical_docs:
+        return "No document text extracted."
     lines = []
-    for i, doc in enumerate(store.logical_docs):
-        field_text = ""
-        if doc.fields:
-            shown = list(doc.fields.items())[:6]
-            field_text = " — " + "; ".join(f"{k}: {v}" for k, v in shown)
+    for i, doc in enumerate(store.logical_docs, start=1):
+        shown = list(doc.fields.items())[:6]
+        field_text = " — " + "; ".join(f"{k}: {v}" for k, v in shown) if shown else ""
         lines.append(
-            f"{i + 1}. **{doc.doc_type}** — Pages {doc.page_start + 1} to {doc.page_end + 1}{field_text}"
+            f"{i}. **{doc.doc_type}** — Pages {doc.page_start + 1} to {doc.page_end + 1}{field_text}"
         )
-    return "\n".join(lines) if lines else "No document text extracted."
+    return "\n".join(lines)
 
 
 class IntelligentRetriever:
@@ -783,8 +790,10 @@ class IntelligentRetriever:
             raise ValueError("OCR produced no indexable text.")
 
         texts = [chunk.text for chunk in chunks_metadata]
-        embeddings = np.array(
-            self.embed_model.encode(texts, show_progress_bar=False, normalize_embeddings=True),
+        embeddings = np.asarray(
+            self.embed_model.encode(
+                texts, show_progress_bar=False, normalize_embeddings=True
+            ),
             dtype="float32",
         )
 
@@ -792,13 +801,17 @@ class IntelligentRetriever:
         self.index = faiss.IndexFlatIP(dim)
         self.index.add(embeddings)
 
-        for doc_type in dict.fromkeys(chunk.doc_type for chunk in chunks_metadata):
-            type_indices = [
-                i for i, chunk in enumerate(chunks_metadata) if chunk.doc_type == doc_type
-            ]
+        indices_by_type: Dict[str, List[int]] = defaultdict(list)
+        for i, chunk in enumerate(chunks_metadata):
+            indices_by_type[chunk.doc_type].append(i)
+
+        for doc_type, type_indices in indices_by_type.items():
             type_index = faiss.IndexFlatIP(dim)
             type_index.add(embeddings[type_indices])
-            self.doc_type_indices[doc_type] = {"index": type_index, "mapping": type_indices}
+            self.doc_type_indices[doc_type] = {
+                "index": type_index,
+                "mapping": type_indices,
+            }
 
     def retrieve(
         self,
@@ -817,36 +830,34 @@ class IntelligentRetriever:
             target_type = None
             routed_label = "All Documents"
 
-        query_embedding = np.array(
+        query_embedding = np.asarray(
             self.embed_model.encode([query], normalize_embeddings=True),
             dtype="float32",
         )
 
         if target_type and target_type in self.doc_type_indices:
             type_data = self.doc_type_indices[target_type]
-            search_k = min(k, len(type_data["mapping"]))
-            distances, indices = type_data["index"].search(query_embedding, search_k)
+            mapping = type_data["mapping"]
+            distances, indices = type_data["index"].search(
+                query_embedding, min(k, len(mapping))
+            )
             pairs = [
-                (
-                    self.chunks_metadata[type_data["mapping"][i]],
-                    float(max(0.0, distances[0][idx])),
-                )
+                (self.chunks_metadata[mapping[i]], float(max(0.0, distances[0][idx])))
                 for idx, i in enumerate(indices[0])
                 if i != -1
             ]
             pairs.sort(key=lambda item: (item[0].page_start, item[0].chunk_index))
             return pairs, routed_label
 
-        search_k = min(k, len(self.chunks_metadata))
-        distances, indices = self.index.search(query_embedding, search_k)
-        return (
-            [
-                (self.chunks_metadata[i], float(max(0.0, distances[0][idx])))
-                for idx, i in enumerate(indices[0])
-                if i != -1
-            ],
-            routed_label,
+        distances, indices = self.index.search(
+            query_embedding, min(k, len(self.chunks_metadata))
         )
+        pairs = [
+            (self.chunks_metadata[i], float(max(0.0, distances[0][idx])))
+            for idx, i in enumerate(indices[0])
+            if i != -1
+        ]
+        return pairs, routed_label
 
 
 class EnhancedDocumentStore:
@@ -868,7 +879,7 @@ class EnhancedDocumentStore:
         self.processing_stats: dict = {}
         self.last_results_dict: dict = {}
 
-    def process_pdf(self, pdf_file, filename: str = "document.pdf") -> Tuple[bool, dict]:
+    def process_pdf(self, pdf_file: Any, filename: str = "document.pdf") -> Tuple[bool, dict]:
         self.is_ready = False
         start_time = time.perf_counter()
         try:
@@ -882,15 +893,13 @@ class EnhancedDocumentStore:
 
             self.retriever.build_indices(self.chunks_metadata)
             process_time = time.perf_counter() - start_time
-            unique_types = list(dict.fromkeys(doc.doc_type for doc in self.logical_docs))
-            ocr_failures = sum(1 for page in self.pages_info if page.ocr_error)
             self.processing_stats = {
                 "filename": os.path.basename(str(filename)),
                 "total_pages": len(self.pages_info),
                 "documents_found": len(self.logical_docs),
                 "total_chunks": len(self.chunks_metadata),
-                "document_types": unique_types,
-                "ocr_failures": ocr_failures,
+                "document_types": list(dict.fromkeys(doc.doc_type for doc in self.logical_docs)),
+                "ocr_failures": sum(1 for page in self.pages_info if page.ocr_error),
                 "processing_time": f"{process_time:.1f}s",
             }
             self.is_ready = True
@@ -907,16 +916,11 @@ class EnhancedDocumentStore:
         with tempfile.TemporaryDirectory(prefix="rag_vector_") as work:
             index_path = os.path.join(work, "index.faiss")
             faiss.write_index(retriever.index, index_path)
-            chunks_path = os.path.join(work, "chunks.json")
-            with open(chunks_path, "w", encoding="utf-8") as f:
-                json.dump(
-                    [asdict(chunk) for chunk in retriever.chunks_metadata],
-                    f,
-                    indent=2,
-                    ensure_ascii=False,
-                )
-            type_dir = os.path.join(work, "doc_types")
-            os.makedirs(type_dir, exist_ok=True)
+            chunks_path = _write_json(
+                os.path.join(work, "chunks.json"),
+                [asdict(chunk) for chunk in retriever.chunks_metadata],
+            )
+            os.makedirs(os.path.join(work, "doc_types"), exist_ok=True)
             type_map: Dict[str, dict] = {}
             for doc_type, data in retriever.doc_type_indices.items():
                 safe = re.sub(r"[^A-Za-z0-9._-]+", "_", doc_type).strip("._") or "type"
@@ -930,6 +934,7 @@ class EnhancedDocumentStore:
                     "file": rel,
                     "mapping": list(data["mapping"]),
                 }
+
             manifest = {
                 "embed_model": EMBED_MODEL_NAME,
                 "index_metric": "inner_product",
@@ -940,17 +945,11 @@ class EnhancedDocumentStore:
                 "processing_stats": self.processing_stats,
                 "doc_type_indices": type_map,
                 "instruct_model": {
-                    "repo_id": getattr(
-                        self.instruct, "repo_id", DEFAULT_INSTRUCT_REPO
-                    ),
-                    "filename": getattr(
-                        self.instruct, "filename", DEFAULT_INSTRUCT_FILENAME
-                    ),
+                    "repo_id": getattr(self.instruct, "repo_id", DEFAULT_INSTRUCT_REPO),
+                    "filename": getattr(self.instruct, "filename", DEFAULT_INSTRUCT_FILENAME),
                 },
             }
-            manifest_path = os.path.join(work, "manifest.json")
-            with open(manifest_path, "w", encoding="utf-8") as f:
-                json.dump(manifest, f, indent=2, ensure_ascii=False)
+            manifest_path = _write_json(os.path.join(work, "manifest.json"), manifest)
             with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
                 zf.write(index_path, "index.faiss")
                 zf.write(chunks_path, "chunks.json")
@@ -959,10 +958,11 @@ class EnhancedDocumentStore:
                     zf.write(os.path.join(work, info["file"]), info["file"])
         return zip_path
 
-    def import_vector_store_zip(self, zip_file) -> dict:
-        zip_path = zip_file.name if hasattr(zip_file, "name") else str(zip_file)
+    def import_vector_store_zip(self, zip_file: Any) -> dict:
+        zip_path = _resolve_file_path(zip_file)
         if not zip_path or not os.path.exists(zip_path):
             raise ValueError("Choose a vector store .zip file.")
+
         with tempfile.TemporaryDirectory(prefix="rag_vector_in_") as work:
             with zipfile.ZipFile(zip_path) as zf:
                 names = {_safe_zip_name(name) for name in zf.namelist()}
@@ -973,8 +973,7 @@ class EnhancedDocumentStore:
                     rel = _safe_zip_name(name)
                     dest = os.path.join(work, rel)
                     os.makedirs(os.path.dirname(dest) or work, exist_ok=True)
-                    with open(dest, "wb") as out:
-                        out.write(zf.read(rel))
+                    Path(dest).write_bytes(zf.read(rel))
                     return dest
 
                 index = faiss.read_index(extract("index.faiss"))
@@ -986,23 +985,25 @@ class EnhancedDocumentStore:
                     raise ValueError(
                         f"Index has {index.ntotal} vectors but chunks.json has {len(chunks)}."
                     )
-                probe = np.array(
-                    self.retriever.embed_model.encode(
+
+                embed_dim = self.retriever.embed_model.get_sentence_embedding_dimension()
+                if embed_dim is None:
+                    probe = self.retriever.embed_model.encode(
                         ["dimension check"], normalize_embeddings=True
-                    ),
-                    dtype="float32",
-                )
-                embed_dim = int(probe.shape[-1])
+                    )
+                    embed_dim = int(probe.shape[-1])
                 if int(index.d) != embed_dim:
                     raise ValueError(
                         f"Zip index dimension {index.d} does not match "
                         f"{EMBED_MODEL_NAME} ({embed_dim})."
                     )
+
                 manifest = {}
                 if "manifest.json" in names:
                     manifest = json.loads(zf.read("manifest.json").decode("utf-8"))
                     if not isinstance(manifest, dict):
                         raise ValueError("manifest.json must be an object.")
+
                 type_indices: Dict[str, dict] = {}
                 for doc_type, info in (manifest.get("doc_type_indices") or {}).items():
                     if not isinstance(info, dict):
@@ -1012,9 +1013,7 @@ class EnhancedDocumentStore:
                     if not rel or _safe_zip_name(rel) not in names:
                         continue
                     type_index = faiss.read_index(extract(rel))
-                    if mapping and (
-                        min(mapping) < 0 or max(mapping) >= len(chunks)
-                    ):
+                    if mapping and (min(mapping) < 0 or max(mapping) >= len(chunks)):
                         raise ValueError(f"Type index mapping for {doc_type} is out of range.")
                     if int(type_index.ntotal) != len(mapping):
                         raise ValueError(
@@ -1032,13 +1031,16 @@ class EnhancedDocumentStore:
             self.chunks_metadata = chunks
             self.logical_docs = _logical_docs_from_chunks(chunks)
             self.pages_info = _pages_from_chunks(chunks)
+
             stats = dict(manifest.get("processing_stats") or {})
-            stats["source"] = os.path.basename(zip_path)
-            stats["total_chunks"] = len(chunks)
-            stats["documents_found"] = len(self.logical_docs)
-            stats["total_pages"] = len(self.pages_info)
-            stats["document_types"] = list(
-                dict.fromkeys(chunk.doc_type for chunk in chunks)
+            stats.update(
+                {
+                    "source": os.path.basename(zip_path),
+                    "total_chunks": len(chunks),
+                    "documents_found": len(self.logical_docs),
+                    "total_pages": len(self.pages_info),
+                    "document_types": list(dict.fromkeys(chunk.doc_type for chunk in chunks)),
+                }
             )
             zip_embed = str(manifest.get("embed_model") or "")
             if zip_embed and zip_embed != EMBED_MODEL_NAME:
@@ -1051,37 +1053,24 @@ class EnhancedDocumentStore:
 
     @staticmethod
     def _is_answer_not_found(answer: str) -> bool:
-        if not answer or not answer.strip() or answer.strip().lower().startswith("not_found"):
+        lowered = (answer or "").strip().lower()
+        if not lowered or lowered.startswith("not_found"):
             return True
-        not_found_phrases = (
-            "not mentioned",
-            "not provided",
-            "does not contain",
-            "no information",
-            "cannot find",
-            "unable to find",
-        )
-        lowered = answer.strip().lower()
-        return any(phrase in lowered for phrase in not_found_phrases)
+        return any(phrase in lowered for phrase in _NOT_FOUND_PHRASES)
 
     @staticmethod
     def _clean_not_found_prefix(answer: str) -> str:
-        cleaned = answer.strip()
-        if cleaned.upper().startswith("NOT_FOUND:"):
-            return cleaned[10:].strip()
-        if cleaned.upper().startswith("NOT_FOUND"):
-            return cleaned[9:].strip(" :-")
-        return cleaned
+        return _NOT_FOUND_PREFIX_RE.sub("", (answer or "").strip()).strip()
 
     def _generate_answer_from_chunks(
         self, question: str, chunks_with_scores: List[Tuple[ChunkMetadata, float]]
     ) -> str:
+        if self.instruct is None:
+            return "NOT_FOUND: Load an instruct GGUF model first."
         retrieved_text = "\n\n---\n\n".join(
             f"[Document: {chunk.doc_type} | Page {chunk.page_start + 1}]\n{chunk.text}"
             for chunk, _ in chunks_with_scores
         )
-        if self.instruct is None:
-            return "NOT_FOUND: Load an instruct GGUF model first."
         prompt = (
             "Based ONLY on the following text, answer the user's question accurately. "
             "Copy dates, lot numbers, and other identifiers exactly as they appear. "
@@ -1156,7 +1145,7 @@ class EnhancedDocumentStore:
                 doc_batch = [(chunk, 1.0) for chunk in doc.chunks]
                 candidate_answer = self._generate_answer_from_chunks(question, doc_batch)
                 if not self._is_answer_not_found(candidate_answer):
-                    answer = self._clean_not_found_prefix(candidate_answer)
+                    answer = candidate_answer
                     retrieved = doc_batch
                     routed_label += f" -> searched {doc.doc_type}"
                     break
@@ -1196,7 +1185,7 @@ class EnhancedDocumentStore:
 
 
 # Initialize models with progress output
-instruct_llm = None
+instruct_llm: Optional[LlamaCppInstruct] = None
 ocr_llm = PaddlePageOcr()
 classifier = HeaderMetadata(instruct_llm)
 
@@ -1213,18 +1202,15 @@ def new_store() -> EnhancedDocumentStore:
 doc_store = new_store()
 
 
-def process_pdf_ui(file):
+def process_pdf_ui(file: Any):
     global doc_store
     if file is None:
         doc_store = new_store()
         return "Waiting for PDF...", "No document processed yet."
-    file_path = file.name if hasattr(file, "name") else str(file)
+    file_path = _resolve_file_path(file)
     success, stats = doc_store.process_pdf(file_path, filename=file_path)
     if not success:
-        return (
-            f"❌ Error: {stats.get('error', 'Unknown')}",
-            "Error processing.",
-        )
+        return f"❌ Error: {stats.get('error', 'Unknown')}", "Error processing."
 
     failure_note = (
         f" {stats['ocr_failures']} page(s) had no OCR text."
@@ -1238,20 +1224,21 @@ def process_pdf_ui(file):
     return status_text, documents_breakdown_md(doc_store)
 
 
-def handle_chat(message, history):
+def handle_chat(message: str, history: Optional[list]):
     history = history or []
     if not message or not message.strip():
         return history, ""
+
+    def _reply(text: str):
+        return history + [
+            {"role": "user", "content": message},
+            {"role": "assistant", "content": text},
+        ], ""
+
     if instruct_llm is None:
-        return history + [
-            {"role": "user", "content": message},
-            {"role": "assistant", "content": "⚠️ Load an instruct GGUF model first."},
-        ], ""
+        return _reply("⚠️ Load an instruct GGUF model first.")
     if not doc_store.is_ready:
-        return history + [
-            {"role": "user", "content": message},
-            {"role": "assistant", "content": "⚠️ Upload a PDF or import a vector store first."},
-        ], ""
+        return _reply("⚠️ Upload a PDF or import a vector store first.")
 
     res = doc_store.query(
         message,
@@ -1259,35 +1246,25 @@ def handle_chat(message, history):
         auto_route=True,
         k=DEFAULT_TOP_K,
     )
-    ans = res["answer"]
     meta_parts = []
     if res.get("sources"):
         meta_parts.append(f"Sources: {', '.join(res['sources'])} ({res['filter_used']})")
     meta_parts.append(f"⏱️ {res['response_time']:.2f}s")
-    ans += f"\n\n*{' | '.join(meta_parts)}*"
-
-    return history + [
-        {"role": "user", "content": message},
-        {"role": "assistant", "content": ans},
-    ], ""
+    return _reply(f"{res['answer']}\n\n*{' | '.join(meta_parts)}*")
 
 
 def export_results_json() -> str:
-    out_path = os.path.join(tempfile.gettempdir(), "rag_results.json")
     payload = doc_store.last_results_dict or {
         "status": "No queries have been run yet.",
         "processing_stats": doc_store.processing_stats,
     }
-    with open(out_path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2, ensure_ascii=False)
-    return out_path
+    return _write_json(os.path.join(tempfile.gettempdir(), "rag_results.json"), payload)
 
 
-def export_chat_history(history) -> str:
-    out_path = os.path.join(tempfile.gettempdir(), "chat_history.json")
-    with open(out_path, "w", encoding="utf-8") as f:
-        json.dump(history or [], f, indent=2, ensure_ascii=False)
-    return out_path
+def export_chat_history(history: Optional[list]) -> str:
+    return _write_json(
+        os.path.join(tempfile.gettempdir(), "chat_history.json"), history or []
+    )
 
 
 def export_vector_store_zip_ui() -> str:
@@ -1297,7 +1274,7 @@ def export_vector_store_zip_ui() -> str:
         raise gr.Error(str(exc)) from exc
 
 
-def import_vector_store_ui(file):
+def import_vector_store_ui(file: Any):
     if file is None:
         return gr.update(), gr.update()
     try:
@@ -1312,44 +1289,50 @@ def import_vector_store_ui(file):
     return status_text, documents_breakdown_md(doc_store)
 
 
+def _close_instruct_llm() -> None:
+    global instruct_llm
+    if instruct_llm is not None and hasattr(instruct_llm, "llm"):
+        try:
+            instruct_llm.llm.close()
+        except Exception as exc:
+            print(f"Close old model failed: {exc}", flush=True)
+
+
 def load_instruct_model_ui(spec: str, local_only: bool = False):
     global instruct_llm
     try:
         repo_id, filename = parse_instruct_spec(spec)
     except ValueError as exc:
         raise gr.Error(str(exc)) from exc
+
+    target_spec = f"{repo_id}/{filename}"
     current_spec = (
         f"{instruct_llm.repo_id}/{instruct_llm.filename}"
         if instruct_llm is not None
         else ""
     )
-    if current_spec == f"{repo_id}/{filename}":
-        return f"Already using {repo_id}/{filename}", cached_models_dropdown(
-            current_spec
-        )
-    old = instruct_llm
-    try:
-        if old is not None and hasattr(old, "llm"):
-            old.llm.close()
-    except Exception as exc:
-        print(f"Close old model failed: {exc}", flush=True)
+    if current_spec == target_spec:
+        return f"Already using {target_spec}", cached_models_dropdown(current_spec)
+
+    _close_instruct_llm()
     instruct_llm = None
     classifier.instruct = None
     doc_store.instruct = None
     gc.collect()
+
     try:
-        new = LlamaCppInstruct(
+        new_model = LlamaCppInstruct(
             repo_id=repo_id,
             filename=filename,
             local_files_only=local_only,
         )
     except Exception as exc:
-        raise gr.Error(f"Could not load {repo_id}/{filename}: {exc}") from exc
-    instruct_llm = new
-    classifier.instruct = new
-    doc_store.instruct = new
-    spec_used = f"{repo_id}/{filename}"
-    return f"Using {spec_used}", cached_models_dropdown(spec_used)
+        raise gr.Error(f"Could not load {target_spec}: {exc}") from exc
+
+    instruct_llm = new_model
+    classifier.instruct = new_model
+    doc_store.instruct = new_model
+    return f"Using {target_spec}", cached_models_dropdown(target_spec)
 
 
 def load_cached_model_ui(selected: str):
@@ -1364,7 +1347,7 @@ if "type" in inspect.signature(gr.Chatbot.__init__).parameters:
     chatbot_kwargs["type"] = "messages"
 _startup_cached = list_cached_gguf_specs()
 _startup_choices = _startup_cached or [NO_CACHED_MODEL]
-_startup_selected = _startup_cached[0] if _startup_cached else NO_CACHED_MODEL
+_startup_selected = _startup_choices[0]
 
 with gr.Blocks(title="Pharmaceutical Document Q&A") as demo:
     gr.Markdown("### 📄 Pharmaceutical Document Q&A")
@@ -1458,7 +1441,6 @@ with gr.Blocks(title="Pharmaceutical Document Q&A") as demo:
         fn=export_chat_history, inputs=chatbot, outputs=download_file_output
     )
 
-    # Inside `with gr.Column(scale=1):`
     with gr.Accordion("🧪 Run Automated Evaluation", open=True):
         gt_file_input = gr.File(
             label="📋 Ground Truth JSON (optional, defaults to ground_truth.json)",
@@ -1466,10 +1448,9 @@ with gr.Blocks(title="Pharmaceutical Document Q&A") as demo:
         )
         eval_btn = gr.Button("▶️ Run Evaluation Suite", variant="primary")
         eval_csv_output = gr.File(
-                    label="📥 Download Evaluation Report (.csv)", interactive=False
-                )
+            label="📥 Download Evaluation Report (.csv)", interactive=False
+        )
 
-    # Place the table output full-width below the main Row (still inside `with gr.Blocks(...) as demo:`)
     eval_output_md = gr.Markdown(label="Evaluation Scorecard")
     eval_btn.click(
         fn=lambda gt_f: __import__("eval_rag_pipeline").run_eval_with_csv(
@@ -1479,15 +1460,6 @@ with gr.Blocks(title="Pharmaceutical Document Q&A") as demo:
         outputs=[eval_output_md, eval_csv_output],
     )
 
-       # fn=lambda gt_f, k: __import__("eval_rag_pipeline").run_eval_as_markdown(gt_f, top_k=k),
-       # outputs=eval_output_md,
 if __name__ == "__main__":
+    atexit.register(_close_instruct_llm)
     demo.launch(inbrowser=True)
-    # ✅ Add this atexit hook to release Metal GPU buffers cleanly on Ctrl+C
-    atexit.register(
-        lambda: (
-            instruct_llm.llm.close()
-            if instruct_llm is not None and hasattr(instruct_llm, "llm")
-            else None
-        )
-    )
