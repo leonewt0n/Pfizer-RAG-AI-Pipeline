@@ -1,0 +1,71 @@
+{
+  "pdf_path": "PharmaDocs/Redacted - Supporting Documentation - Packaging Component - Example 1.pdf",
+  "page_header_fields": {
+    "1": {
+      "ELASTOMER TYPE": "CHLOROBUTYL"
+    },
+    "6": {
+      "West Item": "4432/50 Grey"
+    },
+    "13": {
+      "West Item": "FluroTec Resin D"
+    },
+    "18": {
+      "West Item": "B2 Coating"
+    },
+    "27": {
+      "Version": "Revision 3",
+      "Supersedes": "Revision 2",
+      "Elastomer Type": "Chlorobutyl",
+      "Reinforcement System": "Inert Mineral",
+      "Curing System": "Unconventional",
+      "Dry Natural Rubber Content": "0.0%"
+    },
+    "42": {
+      "TITLE": "WPS-S10-F451",
+      "SCALE": "3:1"
+    }
+  },
+  "rag_test_cases": [
+    {
+      "id": "Q1",
+      "question": "What is the elastomer type stated on Quality Certificate No. 80372784-000010?",
+      "relevant_pages": [1],
+      "expected_field_substring": "CHLOROBUTYL",
+      "expected_numeric": null,
+      "reference_answer": "The elastomer type on Quality Certificate No. 80372784-000010 is CHLOROBUTYL."
+    },
+    {
+      "id": "Q2",
+      "question": "What is the Batch/Lot Number and Manufacturing Date for the first lot listed on Quality Certificate No. 80372784-000010?",
+      "relevant_pages": [2],
+      "expected_field_substring": "D000255363",
+      "expected_numeric": null,
+      "reference_answer": "The first listed lot is D000255363, manufactured on 05 MAR 2025."
+    },
+    {
+      "id": "Q3",
+      "question": "What is the AA-29 B2 Level in ug/part for Batch/Lot Number D000255363?",
+      "relevant_pages": [3],
+      "expected_field_substring": "108",
+      "expected_numeric": 108.0,
+      "reference_answer": "The AA-29 B2 Level for Batch/Lot Number D000255363 is 108 ug/part."
+    },
+    {
+      "id": "Q4",
+      "question": "What is the maximum incidental level in ppm, as a sum, of lead, cadmium, hexavalent chromium, and mercury for West Item 4432/50 Grey?",
+      "relevant_pages": [8],
+      "expected_field_substring": "100",
+      "expected_numeric": 100.0,
+      "reference_answer": "For West Item 4432/50 Grey, incidental levels of lead, cadmium, hexavalent chromium, and mercury will not exceed 100 ppm as a sum."
+    },
+    {
+      "id": "Q5",
+      "question": "What is the ash specification in % for WEST FORMULATION 4432/50 GRAY?",
+      "relevant_pages": [27],
+      "expected_field_substring": "46.6",
+      "expected_numeric": 46.6,
+      "reference_answer": "The ash specification for WEST FORMULATION 4432/50 GRAY is 46.6 ± 2.0 % (method West Ash-01)."
+    }
+  ]
+}

@@ -830,8 +830,8 @@ class EnhancedDocumentStore:
 
 # Initialize models with progress output
 instruct_llm = LlamaCppInstruct(
-    repo_id="bartowski/Mistral-7B-Instruct-v0.3-GGUF",
-    filename="Mistral-7B-Instruct-v0.3-Q5_K_S.gguf",
+    repo_id="unsloth/Ministral-3-14B-Instruct-2512-GGUF",
+    filename="Ministral-3-14B-Instruct-2512-UD-Q4_K_XL.gguf",
 )
 ocr_llm = PaddlePageOcr()
 classifier = HeaderMetadata(instruct_llm)

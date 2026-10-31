@@ -1,0 +1,33 @@
+=== 1. SUMMARY METRICS SCORECARD ===
+Metric,Score
+1a. Header Field Accuracy (Exact Match %),83.33
+1b. QA Field Accuracy (Exact Match %),100.0
+2. Numeric Relative Error (Mean %),0.0
+3a. Retrieval Recall@4 (%),60.0
+3b. Retrieval MRR,0.6
+4. Readability (ROUGE-1 F1 %),86.09
+5. Avg Latency (seconds),19.578
+6. Robustness (Error Rate %),0.0
+
+=== 2. HEADER FIELD EXTRACTION ===
+Page,Field,Ground Truth,Extracted,Exact Match
+Page 1,ELASTOMER TYPE,CHLOROBUTYL,CHLOROBUTYL,PASS
+Page 6,West Item,4432/50 Grey,4432/50 Grey,PASS
+Page 13,West Item,FluroTec Resin D,FluroTec Resin D,PASS
+Page 18,West Item,B2 Coating,B2 Coating,PASS
+Page 27,Version,Revision 3,Revision 3,PASS
+Page 27,Supersedes,Revision 2,Revision 2,PASS
+Page 27,Elastomer Type,Chlorobutyl,Chlorobutyl,PASS
+Page 27,Reinforcement System,Inert Mineral,Inert Mineral,PASS
+Page 27,Curing System,Unconventional,Unconventional,PASS
+Page 27,Dry Natural Rubber Content,0.0%,0.0%,PASS
+Page 42,TITLE,WPS-S10-F451,,FAIL
+Page 42,SCALE,3:1,,FAIL
+
+=== 3. PER-QUERY RAG BREAKDOWN ===
+Query ID,Routed To,Retrieved Pages,Target Pages,Recall@K (%),MRR,Field Match,Numeric Rel Error (%),ROUGE-1 F1 (%),Latency (s),Generated Answer
+Q1,Auto-Routed: **Quality Certificate – Chlorobutyl Elastomer Closures**,[1],[1],100.0,1.0,PASS,N/A,95.65,8.249,The elastomer type stated on **Quality Certificate No. 80372784-000010** is **CHLOROBUTYL**.
+Q2,Auto-Routed: **Quality Certificate – Chlorobutyl Elastomer Closures**,[1],[2],0.0,0.0,PASS,N/A,64.71,17.771,"The Batch/Lot Number for the first lot listed on Quality Certificate No. **80372784-000010** is **D000255363**, and the Manufacturing Date is **05MAR2025**."
+Q3,All Documents,"[3, 34, 4, 39]",[3],100.0,1.0,PASS,0.0,100.0,9.948,The **AA-29 B2 Level** for **Batch/Lot Number D000255363** is **108 ug/part**.
+Q4,Auto-Routed: **Compliance Bulletin: West Item 4432/50 Grey (Non-Kosher)**,[12],[8],0.0,0.0,PASS,0.0,82.61,53.313,"The maximum incidental level, as a sum, of **lead, cadmium, hexavalent chromium, and mercury** for **West Item 4432/50 Grey** is **100 ppm**."
+Q5,Auto-Routed: **Elastomeric Formulation Specifications (WEST 4432/50 GRAY)**,[27],[27],100.0,1.0,PASS,0.0,87.5,8.608,The ash specification for **WEST FORMULATION 4432/50 GRAY** is **46.6 ± 2.0%**.
